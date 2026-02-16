@@ -33,6 +33,7 @@ COPY --from=build /app/api/dist ./api/dist
 COPY --from=build /app/client/package*.json ./client/
 COPY --from=build /app/client/node_modules ./client/node_modules
 COPY --from=build /app/client/dist ./client/dist
+COPY --from=build /app/client/vite.config.ts ./client/vite.config.ts
 
 RUN chmod +x ./start.sh
 
