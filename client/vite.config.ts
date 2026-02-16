@@ -5,6 +5,6 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   preview: {
-    allowedHosts: ['.fly.dev', 'localhost', '127.0.0.1'],
+    allowedHosts: ['balance-2bbjqq.fly.dev', '.fly.dev', 'localhost', '127.0.0.1'],
   },
 })
