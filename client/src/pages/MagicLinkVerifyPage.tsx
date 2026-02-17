@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { apiClient, setAccessToken } from '../api';
+import { AppLayout } from '../ui/AppLayout';
 import { useToast } from '../ui/toast-provider';
 
 interface VerifiedSession {
@@ -79,17 +80,17 @@ export function MagicLinkVerifyPage() {
   }, [navigate, showToast, token]);
 
   return (
-    <main className="page">
+    <AppLayout>
       <h1>Magic Link Verification</h1>
-      {!errorMessage && <p className="muted">{VERIFYING_MESSAGE}</p>}
+      {!errorMessage && <p className="muted page-lead" role="status">{VERIFYING_MESSAGE}</p>}
       {errorMessage && (
         <section className="card">
-          <p className="text-error">{errorMessage}</p>
+          <p className="text-error" role="alert">{errorMessage}</p>
         </section>
       )}
       <nav className="actions">
         <Link to="/">Request a new link</Link>
       </nav>
-    </main>
+    </AppLayout>
   );
 }

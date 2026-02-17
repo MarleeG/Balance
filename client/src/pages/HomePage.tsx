@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ApiError, apiClient } from '../api';
+import { AppLayout } from '../ui/AppLayout';
 import { useToast } from '../ui/toast-provider';
 
 interface CreateSessionResponse {
@@ -154,122 +155,124 @@ export function HomePage() {
   }
 
   return (
-    <main className="page">
+    <AppLayout>
       <h1>Balance</h1>
-      <p className="muted">Start a session, continue a session, or find your sessions.</p>
+      <p className="muted page-lead">Start a session, continue a session, or find your sessions.</p>
 
-      <section className="card">
-        <h2>Start Session</h2>
-        <form className="form-grid" onSubmit={handleStartSession}>
-          <label className="field">
-            <span>Email</span>
-            <input
-              className="input"
-              type="email"
-              autoComplete="email"
-              placeholder="you@example.com"
-              value={startEmail}
-              onChange={(event) => setStartEmail(event.target.value)}
-              required
-            />
-          </label>
+      <div className="home-sections">
+        <section className="card home-card home-card-start">
+          <h2>Start Session</h2>
+          <form className="form-grid home-form" onSubmit={handleStartSession} aria-busy={isStarting}>
+            <label className="field">
+              <span>Email</span>
+              <input
+                className="input"
+                type="email"
+                autoComplete="email"
+                placeholder="you@example.com"
+                value={startEmail}
+                onChange={(event) => setStartEmail(event.target.value)}
+                required
+              />
+            </label>
 
-          <button className="button" type="submit" disabled={isStarting}>
-            {isStarting ? 'Starting...' : 'Start Session'}
-          </button>
-        </form>
+            <button className="button" type="submit" disabled={isStarting}>
+              {isStarting ? 'Starting...' : 'Start Session'}
+            </button>
+          </form>
 
-        {startError && <p className="text-error">{startError}</p>}
+          {startError && <p className="text-error" role="alert">{startError}</p>}
 
-        {createdSession && (
-          <div className="result-box">
-            <p>
-              <strong>Session ID:</strong> {createdSession.sessionId}
-            </p>
-            <div className="actions">
-              <button className="button button-secondary" type="button" onClick={handleCopySessionId}>
-                Copy session ID
-              </button>
-              <button
-                className="button"
-                type="button"
-                onClick={() => navigate(`/sessions/${createdSession.sessionId}`)}
-              >
-                Upload statements
-              </button>
+          {createdSession && (
+            <div className="result-box">
+              <p>
+                <strong>Session ID:</strong> {createdSession.sessionId}
+              </p>
+              <div className="actions">
+                <button className="button button-secondary" type="button" onClick={handleCopySessionId}>
+                  Copy session ID
+                </button>
+                <button
+                  className="button"
+                  type="button"
+                  onClick={() => navigate(`/sessions/${createdSession.sessionId}`)}
+                >
+                  Upload statements
+                </button>
+              </div>
+              {copyState === 'copied' && <p className="text-success" role="status">Session ID copied.</p>}
+              {copyState === 'error' && <p className="text-error" role="alert">Could not copy. Please copy manually.</p>}
             </div>
-            {copyState === 'copied' && <p className="text-success">Session ID copied.</p>}
-            {copyState === 'error' && <p className="text-error">Could not copy. Please copy manually.</p>}
-          </div>
-        )}
-      </section>
+          )}
+        </section>
 
-      <section className="card">
-        <h2>Continue Session</h2>
-        <form className="form-grid" onSubmit={handleContinueSession}>
-          <label className="field">
-            <span>Email</span>
-            <input
-              className="input"
-              type="email"
-              autoComplete="email"
-              placeholder="you@example.com"
-              value={continueEmail}
-              onChange={(event) => setContinueEmail(event.target.value)}
-              required
-            />
-          </label>
+        <section className="card home-card">
+          <h2>Continue Session</h2>
+          <form className="form-grid home-form" onSubmit={handleContinueSession} aria-busy={isContinuing}>
+            <label className="field">
+              <span>Email</span>
+              <input
+                className="input"
+                type="email"
+                autoComplete="email"
+                placeholder="you@example.com"
+                value={continueEmail}
+                onChange={(event) => setContinueEmail(event.target.value)}
+                required
+              />
+            </label>
 
-          <label className="field">
-            <span>Session ID</span>
-            <input
-              className="input"
-              type="text"
-              placeholder="AB12CD34"
-              value={continueSessionId}
-              onChange={(event) => setContinueSessionId(event.target.value)}
-              required
-            />
-          </label>
+            <label className="field">
+              <span>Session ID</span>
+              <input
+                className="input"
+                type="text"
+                placeholder="AB12CD34"
+                value={continueSessionId}
+                onChange={(event) => setContinueSessionId(event.target.value)}
+                required
+              />
+            </label>
 
-          <button className="button" type="submit" disabled={isContinuing}>
-            {isContinuing ? 'Submitting...' : 'Continue Session'}
-          </button>
-        </form>
+            <button className="button" type="submit" disabled={isContinuing}>
+              {isContinuing ? 'Submitting...' : 'Continue Session'}
+            </button>
+          </form>
 
-        {continueError && <p className="text-error">{continueError}</p>}
-        {continueNotice && <p className="text-success">{continueNotice}</p>}
-      </section>
+          {continueError && <p className="text-error" role="alert">{continueError}</p>}
+          {continueNotice && <p className="text-success" role="status">{continueNotice}</p>}
+        </section>
 
-      <section className="card">
-        <h2>Find Sessions</h2>
-        <form className="form-grid" onSubmit={handleFindSessions}>
-          <label className="field">
-            <span>Email</span>
-            <input
-              className="input"
-              type="email"
-              autoComplete="email"
-              placeholder="you@example.com"
-              value={findEmail}
-              onChange={(event) => setFindEmail(event.target.value)}
-              required
-            />
-          </label>
+        <section className="card home-card">
+          <h2>Find Sessions</h2>
+          <form className="form-grid home-form" onSubmit={handleFindSessions} aria-busy={isFinding}>
+            <label className="field">
+              <span>Email</span>
+              <input
+                className="input"
+                type="email"
+                autoComplete="email"
+                placeholder="you@example.com"
+                value={findEmail}
+                onChange={(event) => setFindEmail(event.target.value)}
+                required
+              />
+            </label>
 
-          <button className="button" type="submit" disabled={isFinding}>
-            {isFinding ? 'Submitting...' : 'Find My Sessions'}
-          </button>
-        </form>
+            <button className="button" type="submit" disabled={isFinding}>
+              {isFinding ? 'Submitting...' : 'Find My Sessions'}
+            </button>
+          </form>
 
-        {findError && <p className="text-error">{findError}</p>}
-        {findNotice && <p className="text-success">{findNotice}</p>}
-      </section>
+          {findError && <p className="text-error" role="alert">{findError}</p>}
+          {findNotice && <p className="text-success" role="status">{findNotice}</p>}
+        </section>
+      </div>
 
       <nav className="actions">
         <Link to="/auth/verify">Go to magic link verify route</Link>
         <Link to="/sessions">Go to sessions list route</Link>
       </nav>
-    </main>
+    </AppLayout>
   );
 }
