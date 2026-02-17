@@ -39,8 +39,26 @@ export class FileRecord {
 
   @Prop({
     enum: StatementType,
+    default: StatementType.Unknown,
   })
-  autoDetectedType?: StatementType;
+  autoDetectedType: StatementType;
+
+  @Prop({
+    min: 0,
+    max: 1,
+    default: 0,
+  })
+  detectionConfidence: number;
+
+  @Prop({
+    default: false,
+  })
+  isLikelyStatement: boolean;
+
+  @Prop({
+    default: false,
+  })
+  confirmedByUser: boolean;
 
   @Prop({
     enum: FileStatus,

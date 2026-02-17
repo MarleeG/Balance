@@ -20,6 +20,23 @@ const FILE_UPLOAD_FAILED_MESSAGE = 'Failed to upload file to storage.';
 const SESSION_NOT_FOUND_MESSAGE = 'Session not found.';
 const FILE_NOT_FOUND_MESSAGE = 'File not found.';
 const SESSION_ACCESS_FORBIDDEN_MESSAGE = 'Access to this session is not allowed.';
+const STATEMENT_KEYWORDS: Record<Exclude<StatementType, StatementType.Unknown>, string[]> = {
+  [StatementType.Credit]: [
+    'credit card',
+    'minimum payment',
+    'statement balance',
+    'credit limit',
+  ],
+  [StatementType.Checking]: [
+    'checking account',
+    'deposits',
+    'withdrawals',
+  ],
+  [StatementType.Savings]: [
+    'savings account',
+    'interest earned',
+  ],
+};
 
 export interface MultipartFile {
   originalname: string;
@@ -32,6 +49,9 @@ export interface UploadedFileItem {
   id: string;
   originalName: string;
   statementType: StatementType;
+  autoDetectedType: StatementType;
+  detectionConfidence: number;
+  isLikelyStatement: boolean;
   s3Key: string;
   uploadedAt: string;
 }
@@ -41,9 +61,15 @@ export interface RejectedFileItem {
   reason: string;
 }
 
+export interface UploadWarningItem {
+  originalName: string;
+  reason: string;
+}
+
 export interface UploadFilesResponse {
   uploaded: UploadedFileItem[];
   rejected: RejectedFileItem[];
+  warnings: UploadWarningItem[];
 }
 
 export interface SessionFileSummary {
@@ -62,11 +88,18 @@ export interface SessionFileSummary {
 export interface UpdateFileResponse {
   id: string;
   statementType: StatementType;
+  confirmedByUser: boolean;
 }
 
 export interface DeleteFileResponse {
   deleted: boolean;
   fileId: string;
+}
+
+interface DetectionResult {
+  autoDetectedType: StatementType;
+  detectionConfidence: number;
+  isLikelyStatement: boolean;
 }
 
 @Injectable()
@@ -100,6 +133,7 @@ export class FilesService {
 
     const uploaded: UploadedFileItem[] = [];
     const rejected: RejectedFileItem[] = [];
+    const warnings: UploadWarningItem[] = [];
 
     const acceptedBatch = normalizedFiles.slice(0, maxFiles);
     const skippedBatch = normalizedFiles.slice(maxFiles);
@@ -138,12 +172,17 @@ export class FilesService {
       }
 
       const statementType = metaMap.get(originalName) ?? StatementType.Unknown;
+      // V1 requirement: run detection inline during the upload request (no queue/background worker).
+      const detection = await this.detectStatementTypeFromPdf(file.buffer);
       const fileRecord = new this.filesModel({
         sessionId,
         originalName,
         mimeType: file.mimetype,
         size: file.size,
         statementType,
+        autoDetectedType: detection.autoDetectedType,
+        detectionConfidence: detection.detectionConfidence,
+        isLikelyStatement: detection.isLikelyStatement,
         status: FileStatus.Pending,
         s3Bucket: bucket,
         s3Key: '',
@@ -169,9 +208,19 @@ export class FilesService {
           id: fileId,
           originalName: fileRecord.originalName,
           statementType: fileRecord.statementType,
+          autoDetectedType: fileRecord.autoDetectedType,
+          detectionConfidence: fileRecord.detectionConfidence,
+          isLikelyStatement: fileRecord.isLikelyStatement,
           s3Key: fileRecord.s3Key,
           uploadedAt: new Date(fileRecord.uploadedAt).toISOString(),
         });
+
+        if (!fileRecord.isLikelyStatement) {
+          warnings.push({
+            originalName: fileRecord.originalName,
+            reason: 'No typical bank statement keywords were detected. Uploaded for manual review.',
+          });
+        }
       } catch {
         await this.filesModel.updateOne(
           { _id: fileId },
@@ -185,7 +234,7 @@ export class FilesService {
       }
     }
 
-    return { uploaded, rejected };
+    return { uploaded, rejected, warnings };
   }
 
   async listSessionFiles(sessionId: string, user: AccessTokenPayload): Promise<SessionFileSummary[]> {
@@ -219,11 +268,13 @@ export class FilesService {
     await this.assertSessionAccess(file.sessionId, user, false);
 
     file.statementType = statementType;
+    file.confirmedByUser = true;
     await file.save();
 
     return {
       id: file._id.toString(),
       statementType: file.statementType,
+      confirmedByUser: file.confirmedByUser,
     };
   }
 
@@ -348,5 +399,71 @@ export class FilesService {
 
   private getMaxFileSizeBytes(): number {
     return this.getMaxFileSizeMb() * 1024 * 1024;
+  }
+
+  private async detectStatementTypeFromPdf(pdfBuffer: Buffer): Promise<DetectionResult> {
+    const text = await this.extractPdfText(pdfBuffer);
+    return this.detectStatementTypeFromText(text);
+  }
+
+  private async extractPdfText(pdfBuffer: Buffer): Promise<string> {
+    const { PDFParse } = await import('pdf-parse');
+    const parser = new PDFParse({ data: pdfBuffer });
+    try {
+      const result = await parser.getText();
+      return (result.text ?? '').toLowerCase();
+    } catch {
+      return '';
+    } finally {
+      await parser.destroy().catch(() => undefined);
+    }
+  }
+
+  private detectStatementTypeFromText(text: string): DetectionResult {
+    if (!text) {
+      return {
+        autoDetectedType: StatementType.Unknown,
+        detectionConfidence: 0,
+        isLikelyStatement: false,
+      };
+    }
+
+    const entries = Object.entries(STATEMENT_KEYWORDS).map(([type, keywords]) => {
+      const score = keywords.reduce((acc, keyword) => (text.includes(keyword) ? acc + 1 : acc), 0);
+      return {
+        type: type as Exclude<StatementType, StatementType.Unknown>,
+        score,
+        totalKeywords: keywords.length,
+      };
+    });
+
+    const highestScore = Math.max(...entries.map((entry) => entry.score));
+    const totalScore = entries.reduce((acc, entry) => acc + entry.score, 0);
+
+    if (highestScore <= 0) {
+      return {
+        autoDetectedType: StatementType.Unknown,
+        detectionConfidence: 0,
+        isLikelyStatement: false,
+      };
+    }
+
+    const winners = entries.filter((entry) => entry.score === highestScore);
+    if (winners.length !== 1) {
+      const confidence = totalScore > 0 ? highestScore / totalScore : 0;
+      return {
+        autoDetectedType: StatementType.Unknown,
+        detectionConfidence: Number(confidence.toFixed(2)),
+        isLikelyStatement: true,
+      };
+    }
+
+    const winner = winners[0];
+    const confidence = winner.totalKeywords > 0 ? winner.score / winner.totalKeywords : 0;
+    return {
+      autoDetectedType: winner.type,
+      detectionConfidence: Number(confidence.toFixed(2)),
+      isLikelyStatement: true,
+    };
   }
 }

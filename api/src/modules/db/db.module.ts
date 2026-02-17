@@ -6,10 +6,19 @@ import { Session, SessionSchema } from '../../db/schemas/session.schema';
 
 @Module({
   imports: [
-    MongooseModule.forFeature([
-      { name: Session.name, schema: SessionSchema },
-      { name: FileRecord.name, schema: FileSchema },
-      { name: EmailToken.name, schema: EmailTokenSchema },
+    MongooseModule.forFeatureAsync([
+      {
+        name: Session.name,
+        useFactory: () => SessionSchema,
+      },
+      {
+        name: FileRecord.name,
+        useFactory: () => FileSchema,
+      },
+      {
+        name: EmailToken.name,
+        useFactory: () => EmailTokenSchema,
+      },
     ]),
   ],
   exports: [MongooseModule],
