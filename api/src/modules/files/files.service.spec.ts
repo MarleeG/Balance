@@ -100,4 +100,20 @@ describe('FilesService', () => {
     expect(sessionQuery.email).toBe('intruder@example.com');
     expect(storageService.uploadObject).not.toHaveBeenCalled();
   });
+
+  it('detects credit statement type when text contains minimum payment', () => {
+    const detection = (service as any).detectStatementTypeFromText(
+      'Your minimum payment is due on 02/20. This credit card statement is ready.',
+    );
+
+    expect(detection.autoDetectedType).toBe('credit');
+  });
+
+  it('detects unknown statement type for random text', () => {
+    const detection = (service as any).detectStatementTypeFromText(
+      'lorem ipsum random content with no banking keywords',
+    );
+
+    expect(detection.autoDetectedType).toBe('unknown');
+  });
 });
