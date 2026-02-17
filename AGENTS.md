@@ -2,6 +2,7 @@
 
 ## Security
 - Never read `api/.env`.
+- Never read `client/.env`.
 - Never read files under `secrets/`.
 - Never open files ending in `.pem`, `.key`, `.p12`, or `.pfx` unless the user explicitly asks.
 - Never print or echo values of secret environment variables.
