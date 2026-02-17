@@ -1,14 +1,32 @@
 import { Module } from '@nestjs/common';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { getMongoUri } from './config/mongodb.config';
+import { DbModule } from './modules/db/db.module';
 
 @Module({
   imports: [
-    MongooseModule.forRootAsync({
-      useFactory: () => ({ uri: getMongoUri() }),
+    ConfigModule.forRoot({
+      isGlobal: true,
     }),
+    MongooseModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => {
+        const uri = configService.get<string>('MONGODB_URI')
+          ?? configService.get<string>('MONGOD_URI')
+          ?? getMongoUri();
+
+        return {
+          uri,
+          dbName: 'balance',
+          // Keep auto-indexing in non-production only; use sync script in production when needed.
+          autoIndex: configService.get<string>('NODE_ENV') !== 'production',
+        };
+      },
+    }),
+    DbModule,
   ],
   controllers: [AppController],
   providers: [AppService],

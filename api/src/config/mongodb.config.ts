@@ -27,8 +27,9 @@ function getRequiredEnv(name: 'DB_USER' | 'DB_PASS'): string {
 }
 
 export function getMongoUri(): string {
-  const explicitUri = normalizeEnv(process.env.MONGODB_URI);
+  const explicitUri = normalizeEnv(process.env.MONGODB_URI ?? process.env.MONGOD_URI);
   if (explicitUri) {
+    process.env.MONGODB_URI = explicitUri;
     return explicitUri;
   }
 
@@ -47,5 +48,7 @@ export function getMongoUri(): string {
   const dbPath = dbName ? `/${encodeURIComponent(dbName)}` : '/';
   const appNameQuery = `appName=${encodeURIComponent(appName)}`;
 
-  return `mongodb+srv://${encodedUser}:${encodedPass}@${host}${dbPath}?${appNameQuery}`;
+  const mongoUri = `mongodb+srv://${encodedUser}:${encodedPass}@${host}${dbPath}?${appNameQuery}`;
+  process.env.MONGODB_URI = mongoUri;
+  return mongoUri;
 }
