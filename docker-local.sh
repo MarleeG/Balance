@@ -8,6 +8,7 @@ cd "$ROOT_DIR"
 IMAGE_NAME="${IMAGE_NAME:-balance-app}"
 CONTAINER_NAME="${CONTAINER_NAME:-balance-app-local}"
 DOCKERFILE="${DOCKERFILE:-Dockerfile}"
+DOCKER_BUILD_PROGRESS="${DOCKER_BUILD_PROGRESS:-plain}"
 API_HOST_PORT="${API_HOST_PORT:-3000}"
 FRONTEND_HOST_PORT="${FRONTEND_HOST_PORT:-4173}"
 ENV_FILE="${ENV_FILE:-api/.env}"
@@ -18,7 +19,7 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 echo "Building image ${IMAGE_NAME} using ${DOCKERFILE}..."
-docker build -t "${IMAGE_NAME}" -f "${DOCKERFILE}" .
+DOCKER_BUILDKIT=1 docker build --progress "${DOCKER_BUILD_PROGRESS}" -t "${IMAGE_NAME}" -f "${DOCKERFILE}" .
 
 if docker ps -a --format '{{.Names}}' | grep -Fxq "${CONTAINER_NAME}"; then
   echo "Removing existing container ${CONTAINER_NAME}..."

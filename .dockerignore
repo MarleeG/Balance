@@ -4,3 +4,12 @@
 **/dist
 npm-debug.log
 *.md
+api/.git
+client/.git
+api/node_modules
+client/node_modules
+api/dist
+client/dist
+api/.env
+client/.env
+client/.env.*
