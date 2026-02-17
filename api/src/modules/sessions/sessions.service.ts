@@ -1,8 +1,10 @@
 import {
+  ForbiddenException,
   HttpException,
   HttpStatus,
   Injectable,
   InternalServerErrorException,
+  NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
@@ -14,6 +16,8 @@ import { generateSessionId } from './utils/session-id';
 const DEFAULT_SESSION_TTL_DAYS = 7;
 const SESSION_ID_RETRY_LIMIT = 5;
 const SESSION_ID_COLLISION_MESSAGE = 'Unable to create a unique session ID after 5 attempts.';
+const SESSION_NOT_FOUND_MESSAGE = 'Session not found.';
+const SESSION_ACCESS_FORBIDDEN_MESSAGE = 'Access to this session is not allowed.';
 
 export interface CreateSessionResponse {
   sessionId: string;
@@ -25,6 +29,10 @@ export interface SessionSummary {
   sessionId: string;
   expiresAt: string;
   status: SessionStatus;
+}
+
+export interface DeleteSessionResponse {
+  deleted: boolean;
 }
 
 @Injectable()
@@ -105,6 +113,41 @@ export class SessionsService {
     }).sort({ createdAt: -1 }).exec();
 
     return sessions.map((session) => this.toSessionSummary(session));
+  }
+
+  async getActiveSessionById(sessionId: string, user: { email: string; sessionId?: string }): Promise<SessionSummary> {
+    if (user.sessionId && user.sessionId !== sessionId) {
+      throw new ForbiddenException(SESSION_ACCESS_FORBIDDEN_MESSAGE);
+    }
+
+    const session = await this.findActiveSessionByIdAndEmail(sessionId, user.email);
+    if (!session) {
+      throw new NotFoundException(SESSION_NOT_FOUND_MESSAGE);
+    }
+
+    return session;
+  }
+
+  async deleteActiveSessionById(
+    sessionId: string,
+    user: { email: string; sessionId?: string },
+  ): Promise<DeleteSessionResponse> {
+    await this.getActiveSessionById(sessionId, user);
+
+    await this.sessionsModel.updateOne(
+      {
+        sessionId,
+        email: user.email,
+      },
+      {
+        $set: {
+          status: SessionStatus.Deleted,
+          deletedAt: new Date(),
+        },
+      },
+    ).exec();
+
+    return { deleted: true };
   }
 
   private getSessionExpiration(now: Date): Date {

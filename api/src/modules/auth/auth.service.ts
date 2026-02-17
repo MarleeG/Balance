@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { JwtService } from '@nestjs/jwt';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { EmailToken, EmailTokenDocument, EmailTokenPurpose } from '../../db/schemas/email-token.schema';
@@ -11,9 +12,11 @@ import { AuthRateLimiterService } from './rate-limiter.service';
 import { generateMagicToken, hashMagicToken } from './utils/magic-token';
 
 const DEFAULT_MAGIC_LINK_TTL_MINUTES = 15;
+const DEFAULT_JWT_EXPIRES_IN = '1h';
 const REQUEST_LINK_MESSAGE = "If we found a session, you'll receive an email shortly.";
 const REQUEST_SESSIONS_MESSAGE = "If we found sessions, you'll receive an email shortly.";
 const INVALID_TOKEN_MESSAGE = 'Invalid or expired token.';
+const INVALID_ACCESS_TOKEN_MESSAGE = 'Unable to determine access token expiration.';
 
 interface RequestContext {
   ip?: string;
@@ -32,8 +35,17 @@ export interface GenericAuthResponse {
   message: string;
 }
 
-export interface VerifyResponse {
+export type AccessTokenType = 'continue_session' | 'find_sessions';
+
+export interface AccessTokenPayload {
   email: string;
+  sessionId?: string;
+  type: AccessTokenType;
+}
+
+export interface VerifyResponse {
+  accessToken: string;
+  expiresIn: number;
   sessions: SessionSummary[];
 }
 
@@ -48,6 +60,7 @@ export class AuthService {
     private readonly emailService: EmailService,
     private readonly configService: ConfigService,
     private readonly rateLimiter: AuthRateLimiterService,
+    private readonly jwtService: JwtService,
   ) {}
 
   async requestLink(dto: RequestLinkDto, context: RequestContext): Promise<GenericAuthResponse> {
@@ -126,9 +139,11 @@ export class AuthService {
       throw new BadRequestException(INVALID_TOKEN_MESSAGE);
     }
 
+    const { accessToken, expiresIn } = this.createAccessToken(tokenDoc);
     const sessions = await this.getSessionsForToken(tokenDoc);
     return {
-      email: tokenDoc.email,
+      accessToken,
+      expiresIn,
       sessions,
     };
   }
@@ -192,6 +207,93 @@ export class AuthService {
   private getMagicLinkUrl(rawToken: string): string {
     const baseUrl = (this.configService.get<string>('APP_PUBLIC_URL') ?? 'http://localhost:5173').trim();
     return `${baseUrl}/auth/verify?token=${encodeURIComponent(rawToken)}`;
+  }
+
+  private createAccessToken(tokenDoc: EmailTokenDocument): { accessToken: string; expiresIn: number } {
+    const payload: AccessTokenPayload = {
+      email: tokenDoc.email,
+      type: this.getAccessTokenType(tokenDoc.purpose),
+    };
+
+    if (tokenDoc.purpose === EmailTokenPurpose.ContinueSession && tokenDoc.sessionId) {
+      payload.sessionId = tokenDoc.sessionId;
+    }
+
+    const accessToken = this.jwtService.sign(payload, {
+      expiresIn: this.getJwtExpiresIn(),
+    });
+
+    return {
+      accessToken,
+      expiresIn: this.getExpiresInSeconds(accessToken),
+    };
+  }
+
+  private getAccessTokenType(purpose: EmailTokenPurpose): AccessTokenType {
+    if (purpose === EmailTokenPurpose.ContinueSession) {
+      return 'continue_session';
+    }
+
+    return 'find_sessions';
+  }
+
+  private getJwtExpiresIn(): string {
+    const raw = this.configService.get<string>('JWT_EXPIRES_IN')?.trim();
+    if (raw) {
+      return raw;
+    }
+
+    return DEFAULT_JWT_EXPIRES_IN;
+  }
+
+  private getExpiresInSeconds(accessToken: string): number {
+    const decoded = this.jwtService.decode(accessToken);
+    if (decoded && typeof decoded === 'object' && 'exp' in decoded && 'iat' in decoded) {
+      const exp = Number((decoded as { exp?: number }).exp);
+      const iat = Number((decoded as { iat?: number }).iat);
+
+      if (Number.isFinite(exp) && Number.isFinite(iat) && exp > iat) {
+        return exp - iat;
+      }
+    }
+
+    const fallback = this.parseExpiresInToSeconds(this.getJwtExpiresIn());
+    if (fallback !== null) {
+      return fallback;
+    }
+
+    throw new Error(INVALID_ACCESS_TOKEN_MESSAGE);
+  }
+
+  private parseExpiresInToSeconds(value: string): number | null {
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) {
+      return null;
+    }
+
+    const match = normalized.match(/^(\d+)([smhd]?)$/);
+    if (!match) {
+      return null;
+    }
+
+    const amount = Number.parseInt(match[1], 10);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return null;
+    }
+
+    switch (match[2]) {
+      case '':
+      case 's':
+        return amount;
+      case 'm':
+        return amount * 60;
+      case 'h':
+        return amount * 60 * 60;
+      case 'd':
+        return amount * 24 * 60 * 60;
+      default:
+        return null;
+    }
   }
 
   private isDuplicateKeyError(error: unknown): boolean {
