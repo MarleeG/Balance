@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { apiClient } from '../api';
+import { AppLayout } from '../ui/AppLayout';
+import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { useToast } from '../ui/toast-provider';
 
 interface SessionSummary {
@@ -21,6 +23,7 @@ export function SessionsListPage() {
 
   const [sessions, setSessions] = useState<SessionSummary[]>(state.sessions ?? []);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
+  const [pendingDeleteSessionId, setPendingDeleteSessionId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const sortedSessions = useMemo(
@@ -29,17 +32,13 @@ export function SessionsListPage() {
   );
 
   async function handleDeleteSession(sessionId: string) {
-    const confirmed = window.confirm(`Delete session ${sessionId}? This action cannot be undone.`);
-    if (!confirmed) {
-      return;
-    }
-
     setDeleteError(null);
     setDeletingSessionId(sessionId);
     try {
       await apiClient.delete<{ deleted: boolean }>(`/sessions/${sessionId}`);
       setSessions((current) => current.filter((session) => session.sessionId !== sessionId));
       showToast(`Session ${sessionId} deleted.`, 'success');
+      setPendingDeleteSessionId(null);
     } catch {
       setDeleteError('Unable to delete this session right now. Please try again.');
       showToast('Unable to delete this session right now. Please try again.', 'error');
@@ -58,48 +57,82 @@ export function SessionsListPage() {
   }
 
   return (
-    <main className="page">
+    <AppLayout>
       <h1>Sessions</h1>
-      <p className="muted">Open a session to continue uploading and managing statements.</p>
+      <p className="muted page-lead">Open a session to continue uploading and managing statements.</p>
 
-      {deleteError && <p className="text-error">{deleteError}</p>}
+      {deleteError && <p className="text-error" role="alert">{deleteError}</p>}
 
       {sortedSessions.length === 0 ? (
         <section className="card">
-          <p>No sessions found from this link. Request a new magic link if needed.</p>
+          <p role="status">No sessions found from this link. Request a new magic link if needed.</p>
         </section>
       ) : (
-        sortedSessions.map((session) => (
-          <section className="card session-row" key={session.sessionId}>
-            <div>
-              <p><strong>{session.sessionId}</strong></p>
-              <p className="muted">Expires: {formatDate(session.expiresAt)}</p>
-              <p className="muted">Status: {session.status}</p>
-            </div>
-            <div className="actions">
-              <button
-                className="button"
-                type="button"
-                onClick={() => navigate(`/sessions/${session.sessionId}`)}
-              >
-                Open
-              </button>
-              <button
-                className="button button-secondary"
-                type="button"
-                onClick={() => handleDeleteSession(session.sessionId)}
-                disabled={deletingSessionId === session.sessionId}
-              >
-                {deletingSessionId === session.sessionId ? 'Deleting...' : 'Delete session'}
-              </button>
-            </div>
-          </section>
-        ))
+        <div className="sessions-list" role="list" aria-label="Available sessions" aria-busy={deletingSessionId !== null}>
+          <div className="sessions-list-head" aria-hidden="true">
+            <span>Session</span>
+            <span>Expires</span>
+            <span>Status</span>
+            <span>Actions</span>
+          </div>
+          {sortedSessions.map((session) => (
+            <section className="card session-item" key={session.sessionId} role="listitem">
+              <div className="session-details">
+                <p className="session-id"><strong>{session.sessionId}</strong></p>
+                <p className="session-meta muted">
+                  <span className="session-meta-label">Expires</span>
+                  <span>{formatDate(session.expiresAt)}</span>
+                </p>
+                <p className="session-meta muted">
+                  <span className="session-meta-label">Status</span>
+                  <span>{session.status}</span>
+                </p>
+              </div>
+              <div className="session-actions">
+                <button
+                  className="button"
+                  type="button"
+                  onClick={() => navigate(`/sessions/${session.sessionId}`)}
+                >
+                  Open
+                </button>
+                <button
+                  className="button button-secondary"
+                  type="button"
+                  onClick={() => setPendingDeleteSessionId(session.sessionId)}
+                  disabled={deletingSessionId === session.sessionId}
+                >
+                  {deletingSessionId === session.sessionId ? 'Deleting...' : 'Delete session'}
+                </button>
+              </div>
+            </section>
+          ))}
+        </div>
       )}
 
       <nav className="actions">
         <Link to="/">Back home</Link>
       </nav>
-    </main>
+
+      <ConfirmDialog
+        open={pendingDeleteSessionId !== null}
+        title="Delete session?"
+        message={
+          pendingDeleteSessionId
+            ? `This will permanently remove session ${pendingDeleteSessionId}.`
+            : 'This will permanently remove this session.'
+        }
+        confirmLabel="Delete session"
+        destructive
+        busy={Boolean(deletingSessionId)}
+        onCancel={() => setPendingDeleteSessionId(null)}
+        onConfirm={() => {
+          if (!pendingDeleteSessionId) {
+            return;
+          }
+          return handleDeleteSession(pendingDeleteSessionId);
+        }}
+      />
+    </AppLayout>
   );
 }

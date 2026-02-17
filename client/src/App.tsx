@@ -1,4 +1,4 @@
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import { BrowserRouter, Link, Navigate, Route, Routes } from 'react-router-dom';
 import { HomePage } from './pages/HomePage';
 import { MagicLinkVerifyPage } from './pages/MagicLinkVerifyPage';
 import { SessionDashboardPage } from './pages/SessionDashboardPage';
@@ -12,12 +12,13 @@ function App() {
     <ThemeProvider>
       <ToastProvider>
         <BrowserRouter>
+          <a className="skip-link" href="#main-content">Skip to main content</a>
           <header className="app-header">
-            <div className="app-header-inner">
-              <div className="brand">
+            <div className="app-container app-header-inner">
+              <Link className="brand" to="/" aria-label="Balance home">
                 <span className="brand-mark" />
                 <strong>Balance</strong>
-              </div>
+              </Link>
               <ThemeToggle />
             </div>
           </header>
