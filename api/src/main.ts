@@ -1,3 +1,4 @@
+import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { initializeStartupConnections, loadEnvFile } from './startup/bootstrap.helpers';
@@ -5,6 +6,11 @@ import { initializeStartupConnections, loadEnvFile } from './startup/bootstrap.h
 async function bootstrap() {
   loadEnvFile();
   const app = await NestFactory.create(AppModule);
+  app.useGlobalPipes(new ValidationPipe({
+    whitelist: true,
+    forbidNonWhitelisted: true,
+    transform: true,
+  }));
   await initializeStartupConnections(app);
   await app.listen(process.env.PORT ?? 3000);
 }
