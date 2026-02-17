@@ -21,6 +21,12 @@ export interface CreateSessionResponse {
   expiresAt: string;
 }
 
+export interface SessionSummary {
+  sessionId: string;
+  expiresAt: string;
+  status: SessionStatus;
+}
+
 @Injectable()
 export class SessionsService {
   constructor(
@@ -69,6 +75,38 @@ export class SessionsService {
     throw new InternalServerErrorException(SESSION_ID_COLLISION_MESSAGE);
   }
 
+  async findActiveSessionByIdAndEmail(sessionId: string, email: string): Promise<SessionSummary | null> {
+    const session = await this.sessionsModel.findOne({
+      ...this.getActiveSessionFilter(),
+      sessionId,
+      email,
+    }).exec();
+
+    if (!session) {
+      return null;
+    }
+
+    return this.toSessionSummary(session);
+  }
+
+  async hasActiveSessionsForEmail(email: string): Promise<boolean> {
+    const existing = await this.sessionsModel.exists({
+      ...this.getActiveSessionFilter(),
+      email,
+    });
+
+    return Boolean(existing);
+  }
+
+  async listActiveSessionsForEmail(email: string): Promise<SessionSummary[]> {
+    const sessions = await this.sessionsModel.find({
+      ...this.getActiveSessionFilter(),
+      email,
+    }).sort({ createdAt: -1 }).exec();
+
+    return sessions.map((session) => this.toSessionSummary(session));
+  }
+
   private getSessionExpiration(now: Date): Date {
     const ttlDays = this.getSessionTtlDays();
     return new Date(now.getTime() + ttlDays * 24 * 60 * 60 * 1000);
@@ -92,5 +130,20 @@ export class SessionsService {
 
     const possibleMongoError = error as { code?: number };
     return possibleMongoError.code === 11000;
+  }
+
+  private getActiveSessionFilter(): { status: SessionStatus; expiresAt: { $gt: Date } } {
+    return {
+      status: SessionStatus.Active,
+      expiresAt: { $gt: new Date() },
+    };
+  }
+
+  private toSessionSummary(session: Pick<Session, 'sessionId' | 'expiresAt' | 'status'>): SessionSummary {
+    return {
+      sessionId: session.sessionId,
+      expiresAt: new Date(session.expiresAt).toISOString(),
+      status: session.status,
+    };
   }
 }

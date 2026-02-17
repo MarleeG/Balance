@@ -7,5 +7,6 @@ import { SessionsService } from './sessions.service';
   imports: [DbModule],
   controllers: [SessionsController],
   providers: [SessionsService],
+  exports: [SessionsService],
 })
 export class SessionsModule {}

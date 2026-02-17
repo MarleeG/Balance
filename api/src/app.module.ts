@@ -4,6 +4,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { getMongoUri } from './config/mongodb.config';
+import { AuthModule } from './modules/auth/auth.module';
 import { DbModule } from './modules/db/db.module';
 import { SessionsModule } from './modules/sessions/sessions.module';
 
@@ -29,6 +30,7 @@ import { SessionsModule } from './modules/sessions/sessions.module';
     }),
     DbModule,
     SessionsModule,
+    AuthModule,
   ],
   controllers: [AppController],
   providers: [AppService],
