@@ -4,11 +4,6 @@ import { AuthenticatedRequest, JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CreateSessionDto } from './dto/create-session.dto';
 import { CreateSessionResponse, DeleteSessionResponse, SessionSummary, SessionsService } from './sessions.service';
 
-interface SessionFilesStubResponse {
-  message: string;
-  sessionId: string;
-}
-
 @Controller('sessions')
 export class SessionsController {
   constructor(private readonly sessionsService: SessionsService) {}
@@ -35,19 +30,6 @@ export class SessionsController {
   @Get(':sessionId')
   getSessionById(@Param('sessionId') sessionId: string, @Req() req: AuthenticatedRequest): Promise<SessionSummary> {
     return this.sessionsService.getActiveSessionById(sessionId, this.getAuthenticatedUser(req));
-  }
-
-  @UseGuards(JwtAuthGuard)
-  @Post(':sessionId/files')
-  async uploadFileStub(
-    @Param('sessionId') sessionId: string,
-    @Req() req: AuthenticatedRequest,
-  ): Promise<SessionFilesStubResponse> {
-    await this.sessionsService.getActiveSessionById(sessionId, this.getAuthenticatedUser(req));
-    return {
-      message: 'File upload endpoint is protected and ready for implementation.',
-      sessionId,
-    };
   }
 
   @UseGuards(JwtAuthGuard)

@@ -6,6 +6,7 @@ import { AppService } from './app.service';
 import { getMongoUri } from './config/mongodb.config';
 import { AuthModule } from './modules/auth/auth.module';
 import { DbModule } from './modules/db/db.module';
+import { FilesModule } from './modules/files/files.module';
 import { SessionsModule } from './modules/sessions/sessions.module';
 
 @Module({
@@ -31,6 +32,7 @@ import { SessionsModule } from './modules/sessions/sessions.module';
     DbModule,
     SessionsModule,
     AuthModule,
+    FilesModule,
   ],
   controllers: [AppController],
   providers: [AppService],

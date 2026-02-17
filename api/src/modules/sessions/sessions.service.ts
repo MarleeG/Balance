@@ -4,12 +4,15 @@ import {
   HttpStatus,
   Injectable,
   InternalServerErrorException,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
+import { FileDocument, FileRecord, FileStatus } from '../../db/schemas/file.schema';
 import { Session, SessionDocument, SessionStatus } from '../../db/schemas/session.schema';
+import { StorageService } from '../storage/storage.service';
 import type { CreateSessionDto } from './dto/create-session.dto';
 import { generateSessionId } from './utils/session-id';
 
@@ -37,10 +40,15 @@ export interface DeleteSessionResponse {
 
 @Injectable()
 export class SessionsService {
+  private readonly logger = new Logger(SessionsService.name);
+
   constructor(
     @InjectModel(Session.name)
     private readonly sessionsModel: Model<SessionDocument>,
+    @InjectModel(FileRecord.name)
+    private readonly filesModel: Model<FileDocument>,
     private readonly configService: ConfigService,
+    private readonly storageService: StorageService,
   ) {}
 
   async createSession(dto: CreateSessionDto): Promise<CreateSessionResponse> {
@@ -132,7 +140,7 @@ export class SessionsService {
     sessionId: string,
     user: { email: string; sessionId?: string },
   ): Promise<DeleteSessionResponse> {
-    await this.getActiveSessionById(sessionId, user);
+    await this.getOwnedSessionById(sessionId, user);
 
     await this.sessionsModel.updateOne(
       {
@@ -147,7 +155,51 @@ export class SessionsService {
       },
     ).exec();
 
+    const uploadedFiles = await this.filesModel.find({
+      sessionId,
+      status: FileStatus.Uploaded,
+    }).exec();
+
+    for (const file of uploadedFiles) {
+      try {
+        await this.storageService.deleteObject(file.s3Bucket, file.s3Key);
+      } catch (error) {
+        const fileId = file._id?.toString() ?? 'unknown';
+        const details = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`Failed to delete S3 object for file ${fileId}: ${details}`);
+      }
+    }
+
+    if (uploadedFiles.length > 0) {
+      const deletedAt = new Date();
+      await this.filesModel.updateMany(
+        { _id: { $in: uploadedFiles.map((file) => file._id) } },
+        { $set: { status: FileStatus.Deleted, deletedAt } },
+      ).exec();
+    }
+
     return { deleted: true };
+  }
+
+  private async getOwnedSessionById(
+    sessionId: string,
+    user: { email: string; sessionId?: string },
+  ): Promise<SessionDocument> {
+    if (user.sessionId && user.sessionId !== sessionId) {
+      throw new ForbiddenException(SESSION_ACCESS_FORBIDDEN_MESSAGE);
+    }
+
+    const session = await this.sessionsModel.findOne({
+      sessionId,
+      email: user.email,
+      status: { $ne: SessionStatus.Deleted },
+    }).exec();
+
+    if (!session) {
+      throw new NotFoundException(SESSION_NOT_FOUND_MESSAGE);
+    }
+
+    return session;
   }
 
   private getSessionExpiration(now: Date): Date {
