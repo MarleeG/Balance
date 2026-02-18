@@ -6,6 +6,7 @@ const RESEND_API_URL = 'https://api.resend.com/emails';
 const DEFAULT_EMAIL_PROVIDER = 'console';
 const DEFAULT_EMAIL_FROM = 'onboarding@resend.dev';
 const DEFAULT_MAGIC_LINK_TTL_MINUTES = 15;
+const DEFAULT_RESEND_TIMEOUT_MS = 8000;
 const RESEND_SESSIONS_SUBJECT = 'Your Balance sessions';
 
 function normalizeEnv(value: string | undefined): string | undefined {
@@ -55,6 +56,7 @@ export class EmailService {
     try {
       const response = await fetch(RESEND_API_URL, {
         method: 'POST',
+        signal: AbortSignal.timeout(this.getResendTimeoutMs()),
         headers: {
           Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
@@ -90,7 +92,7 @@ export class EmailService {
       }
     } catch (error) {
       this.logger.error(
-        `Resend send threw for ${email}: ${error instanceof Error ? error.message : String(error)}`,
+        `Resend send threw for ${email}: ${this.getErrorMessage(error)}`,
         error instanceof Error ? error.stack : undefined,
       );
       throw error;
@@ -140,6 +142,36 @@ export class EmailService {
     }
 
     return DEFAULT_MAGIC_LINK_TTL_MINUTES;
+  }
+
+  private getResendTimeoutMs(): number {
+    const raw = normalizeEnv(this.configService.get<string>('RESEND_TIMEOUT_MS'));
+    const parsed = Number.parseInt(raw ?? '', 10);
+    if (Number.isInteger(parsed) && parsed > 0) {
+      return parsed;
+    }
+
+    return DEFAULT_RESEND_TIMEOUT_MS;
+  }
+
+  private getErrorMessage(error: unknown): string {
+    if (!(error instanceof Error)) {
+      return String(error);
+    }
+
+    const cause = (error as Error & { cause?: unknown }).cause;
+    if (!cause || typeof cause !== 'object') {
+      return error.message;
+    }
+
+    const causeRecord = cause as { code?: string; message?: string };
+    const causeCode = typeof causeRecord.code === 'string' ? causeRecord.code : null;
+    const causeMessage = typeof causeRecord.message === 'string' ? causeRecord.message : null;
+    if (!causeCode && !causeMessage) {
+      return error.message;
+    }
+
+    return `${error.message} (cause: ${causeCode ?? 'unknown'}${causeMessage ? ` ${causeMessage}` : ''})`;
   }
 
   private buildMagicLinkHtml(link: string, ttlMinutes: number): string {
