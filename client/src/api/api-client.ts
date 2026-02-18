@@ -3,9 +3,18 @@ import { getAccessToken } from './token-storage';
 const DEFAULT_API_BASE_URL = 'http://localhost:3000';
 let hasLoggedApiBaseUrl = false;
 
+function getDefaultApiBaseUrl(): string {
+  if (import.meta.env.DEV) {
+    return DEFAULT_API_BASE_URL;
+  }
+
+  // In production, default to same-origin API routes (e.g., /auth/request-sessions).
+  return '';
+}
+
 export function getApiBaseUrl(): string {
   const configured = import.meta.env.VITE_API_BASE_URL?.trim();
-  const baseUrl = configured && configured.length > 0 ? configured : DEFAULT_API_BASE_URL;
+  const baseUrl = configured && configured.length > 0 ? configured : getDefaultApiBaseUrl();
   return baseUrl.replace(/\/+$/, '');
 }
 
@@ -15,7 +24,12 @@ function buildUrl(path: string): string {
   }
 
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
-  return `${getApiBaseUrl()}${normalizedPath}`;
+  const baseUrl = getApiBaseUrl();
+  if (!baseUrl) {
+    return normalizedPath;
+  }
+
+  return `${baseUrl}${normalizedPath}`;
 }
 
 function isRequestSessionsPath(path: string): boolean {
