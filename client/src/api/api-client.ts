@@ -1,8 +1,9 @@
 import { getAccessToken } from './token-storage';
 
 const DEFAULT_API_BASE_URL = 'http://localhost:3000';
+let hasLoggedApiBaseUrl = false;
 
-function getApiBaseUrl(): string {
+export function getApiBaseUrl(): string {
   const configured = import.meta.env.VITE_API_BASE_URL?.trim();
   const baseUrl = configured && configured.length > 0 ? configured : DEFAULT_API_BASE_URL;
   return baseUrl.replace(/\/+$/, '');
@@ -15,6 +16,37 @@ function buildUrl(path: string): string {
 
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
   return `${getApiBaseUrl()}${normalizedPath}`;
+}
+
+function isRequestSessionsPath(path: string): boolean {
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  return normalizedPath === '/auth/request-sessions';
+}
+
+export function logApiBaseUrlOnce(): void {
+  if (!import.meta.env.DEV || hasLoggedApiBaseUrl) {
+    return;
+  }
+
+  hasLoggedApiBaseUrl = true;
+  const baseUrl = getApiBaseUrl();
+  console.info(`[api] Base URL resolved to: ${baseUrl}`);
+
+  if (typeof window !== 'undefined') {
+    try {
+      const uiOrigin = window.location.origin;
+      const apiOrigin = new URL(baseUrl).origin;
+      if (uiOrigin === apiOrigin) {
+        console.warn(
+          `[api] Base URL origin matches UI origin (${uiOrigin}). Verify VITE_API_BASE_URL is correct for API.`,
+        );
+      }
+    } catch {
+      console.warn(
+        `[api] Could not parse API base URL "${baseUrl}". Include protocol, e.g. http://localhost:3000`,
+      );
+    }
+  }
 }
 
 function isJsonContentType(contentType: string | null): boolean {
@@ -85,7 +117,12 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
     }
   }
 
-  const response = await fetch(buildUrl(path), {
+  const requestUrl = buildUrl(path);
+  if (import.meta.env.DEV && isRequestSessionsPath(path)) {
+    console.info(`[api] Request URL for /auth/request-sessions: ${requestUrl}`);
+  }
+
+  const response = await fetch(requestUrl, {
     ...options,
     method,
     headers,

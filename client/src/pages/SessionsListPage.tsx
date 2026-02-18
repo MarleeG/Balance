@@ -1,12 +1,13 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { apiClient } from '../api';
+import { ApiError, apiClient, getAccessToken } from '../api';
 import { AppLayout } from '../ui/AppLayout';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { useToast } from '../ui/toast-provider';
 
 interface SessionSummary {
   sessionId: string;
+  createdAt?: string;
   expiresAt: string;
   status: string;
 }
@@ -22,14 +23,78 @@ export function SessionsListPage() {
   const state = (location.state ?? {}) as SessionsLocationState;
 
   const [sessions, setSessions] = useState<SessionSummary[]>(state.sessions ?? []);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [pendingDeleteSessionId, setPendingDeleteSessionId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const sortedSessions = useMemo(
-    () => [...sessions].sort((a, b) => new Date(a.expiresAt).getTime() - new Date(b.expiresAt).getTime()),
+    () => [...sessions].sort((a, b) => {
+      const aTime = new Date(a.createdAt ?? a.expiresAt).getTime();
+      const bTime = new Date(b.createdAt ?? b.expiresAt).getTime();
+      return bTime - aTime;
+    }),
     [sessions],
   );
+
+  useEffect(() => {
+    let isActive = true;
+    const abortController = new AbortController();
+
+    async function loadSessions() {
+      setIsLoading(true);
+      setLoadError(null);
+
+      if (!getAccessToken()) {
+        if (!isActive) {
+          return;
+        }
+
+        setLoadError('To access your sessions, continue via email link.');
+        setIsLoading(false);
+        return;
+      }
+
+      try {
+        const fetchedSessions = await apiClient.get<SessionSummary[]>(
+          '/sessions',
+          { signal: abortController.signal },
+        );
+
+        if (!isActive) {
+          return;
+        }
+
+        setSessions(fetchedSessions ?? []);
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          return;
+        }
+
+        if (!isActive) {
+          return;
+        }
+
+        if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+          setLoadError('To access your sessions, continue via email link.');
+        } else {
+          setLoadError('Unable to load your sessions right now. Please try again.');
+        }
+      } finally {
+        if (isActive) {
+          setIsLoading(false);
+        }
+      }
+    }
+
+    loadSessions();
+
+    return () => {
+      isActive = false;
+      abortController.abort();
+    };
+  }, []);
 
   async function handleDeleteSession(sessionId: string) {
     setDeleteError(null);
@@ -62,15 +127,28 @@ export function SessionsListPage() {
       <p className="muted page-lead">Open a session to continue uploading and managing statements.</p>
 
       {deleteError && <p className="text-error" role="alert">{deleteError}</p>}
+      {loadError && (
+        <section className="card">
+          <p className="text-error" role="alert">{loadError}</p>
+          <div className="actions">
+            <Link className="button button-secondary" to="/#continue-session">Continue via email link</Link>
+          </div>
+        </section>
+      )}
 
-      {sortedSessions.length === 0 ? (
+      {!loadError && isLoading ? (
+        <section className="card">
+          <p role="status">Loading sessions...</p>
+        </section>
+      ) : !loadError && sortedSessions.length === 0 ? (
         <section className="card">
           <p role="status">No sessions found from this link. Request a new magic link if needed.</p>
         </section>
-      ) : (
+      ) : !loadError ? (
         <div className="sessions-list" role="list" aria-label="Available sessions" aria-busy={deletingSessionId !== null}>
           <div className="sessions-list-head" aria-hidden="true">
             <span>Session</span>
+            <span>Created</span>
             <span>Expires</span>
             <span>Status</span>
             <span>Actions</span>
@@ -79,6 +157,10 @@ export function SessionsListPage() {
             <section className="card session-item" key={session.sessionId} role="listitem">
               <div className="session-details">
                 <p className="session-id"><strong>{session.sessionId}</strong></p>
+                <p className="session-meta muted">
+                  <span className="session-meta-label">Created</span>
+                  <span>{session.createdAt ? formatDate(session.createdAt) : 'Not available'}</span>
+                </p>
                 <p className="session-meta muted">
                   <span className="session-meta-label">Expires</span>
                   <span>{formatDate(session.expiresAt)}</span>
@@ -108,7 +190,7 @@ export function SessionsListPage() {
             </section>
           ))}
         </div>
-      )}
+      ) : null}
 
       <nav className="actions">
         <Link to="/">Back home</Link>

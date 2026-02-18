@@ -378,7 +378,7 @@ a:hover {
 @media (min-width: 1024px) {
   .sessions-list-head {
     display: grid;
-    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 0.8fr) auto;
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 0.8fr) auto;
     gap: 0.8rem;
     color: var(--muted);
     font-size: 0.8rem;
@@ -394,7 +394,7 @@ a:hover {
   }
 
   .session-details {
-    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 0.8fr);
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 0.8fr);
     align-items: center;
     gap: 0.8rem;
   }
