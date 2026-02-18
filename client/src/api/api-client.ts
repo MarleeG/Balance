@@ -8,8 +8,8 @@ function getDefaultApiBaseUrl(): string {
     return DEFAULT_API_BASE_URL;
   }
 
-  // In production, default to same-origin API routes (e.g., /auth/request-sessions).
-  return '';
+  // In production, route API calls through a same-origin proxy prefix.
+  return '/api';
 }
 
 export function getApiBaseUrl(): string {
