@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { apiClient } from '../api';
+import { ApiError, apiClient, getAccessToken } from '../api';
 import { AppLayout } from '../ui/AppLayout';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { useToast } from '../ui/toast-provider';
@@ -15,6 +15,7 @@ interface FileRecordItem {
   autoDetectedType?: StatementType;
   detectionConfidence?: number;
   isLikelyStatement?: boolean;
+  status?: string;
   size?: number;
   s3Key?: string;
   uploadedAt?: string;
@@ -45,6 +46,7 @@ interface PendingUploadFile {
 
 const MAX_FILES_PER_UPLOAD = 10;
 const STATEMENT_TYPE_OPTIONS: StatementType[] = ['unknown', 'credit', 'checking', 'savings'];
+const AUTH_REQUIRED_MESSAGE = 'To access this session, continue via email link.';
 
 function formatBytes(bytes?: number): string {
   if (!bytes || bytes < 0) {
@@ -84,6 +86,7 @@ export function SessionDashboardPage() {
   const { sessionId } = useParams();
   const navigate = useNavigate();
   const { showToast } = useToast();
+  const hasAccessToken = Boolean(getAccessToken());
 
   const [existingFiles, setExistingFiles] = useState<FileRecordItem[]>([]);
   const [pendingFiles, setPendingFiles] = useState<PendingUploadFile[]>([]);
@@ -103,6 +106,12 @@ export function SessionDashboardPage() {
   useEffect(() => {
     if (!sessionId) {
       setErrorMessage('Missing session ID.');
+      setIsLoadingFiles(false);
+      return;
+    }
+
+    if (!hasAccessToken) {
+      setErrorMessage(null);
       setIsLoadingFiles(false);
       return;
     }
@@ -133,6 +142,13 @@ export function SessionDashboardPage() {
         if (error instanceof DOMException && error.name === 'AbortError') {
           return;
         }
+
+        if (error instanceof ApiError && error.status === 401) {
+          setErrorMessage(AUTH_REQUIRED_MESSAGE);
+          showToast(AUTH_REQUIRED_MESSAGE, 'error');
+          return;
+        }
+
         if (!cancelled) {
           setErrorMessage('Unable to load files for this session.');
           showToast('Unable to load files for this session.', 'error');
@@ -149,7 +165,7 @@ export function SessionDashboardPage() {
       cancelled = true;
       controller.abort();
     };
-  }, [sessionId, showToast]);
+  }, [hasAccessToken, sessionId, showToast]);
 
   const uploadableFiles = useMemo(
     () => pendingFiles.filter((item) => item.file.type === 'application/pdf'),
@@ -194,6 +210,11 @@ export function SessionDashboardPage() {
       return;
     }
 
+    if (!hasAccessToken) {
+      setErrorMessage(AUTH_REQUIRED_MESSAGE);
+      return;
+    }
+
     if (uploadableFiles.length === 0) {
       setErrorMessage('Select at least one PDF file to upload.');
       return;
@@ -233,9 +254,14 @@ export function SessionDashboardPage() {
       const message = `Uploaded ${uploadedItems.length} file${uploadedItems.length === 1 ? '' : 's'}.`;
       setSuccessMessage(message);
       showToast(message, 'success');
-    } catch {
-      setErrorMessage('Upload failed. Please try again.');
-      showToast('Upload failed. Please try again.', 'error');
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        setErrorMessage(AUTH_REQUIRED_MESSAGE);
+        showToast(AUTH_REQUIRED_MESSAGE, 'error');
+      } else {
+        setErrorMessage('Upload failed. Please try again.');
+        showToast('Upload failed. Please try again.', 'error');
+      }
     } finally {
       setIsUploading(false);
     }
@@ -343,174 +369,210 @@ export function SessionDashboardPage() {
       {errorMessage && <p className="text-error" role="alert">{errorMessage}</p>}
       {successMessage && <p className="text-success" role="status">{successMessage}</p>}
 
-      <div className="dashboard-main">
-        <section className="card dashboard-panel dashboard-upload-panel" aria-busy={isUploading}>
-          <h2>Upload Statements</h2>
-          <p className="muted">Select up to {MAX_FILES_PER_UPLOAD} files. PDF files only.</p>
-
-          <label className="field" htmlFor="dashboard-file-input">
-            <span>Select files</span>
-          </label>
-          <input
-            id="dashboard-file-input"
-            className="input"
-            type="file"
-            accept="application/pdf,.pdf"
-            multiple
-            onChange={onSelectFiles}
-          />
-
-          {pendingFiles.length > 0 && (
-            <div className="stack-md dashboard-pending-list" role="list" aria-label="Files selected for upload">
-              {pendingFiles.map((item) => (
-                <article className="result-box dashboard-pending-item" key={item.localId} role="listitem">
-                  <p><strong>{item.file.name}</strong></p>
-                  <p className="muted">Size: {formatBytes(item.file.size)}</p>
-                  {item.warning && <p className="text-error">{item.warning}</p>}
-
-                  <label className="field">
-                    <span>Statement Type</span>
-                    <select
-                      className="input"
-                      value={item.statementType}
-                      onChange={(event) => updatePendingType(item.localId, toStatementType(event.target.value))}
-                    >
-                      {STATEMENT_TYPE_OPTIONS.map((option) => (
-                        <option value={option} key={option}>{option}</option>
-                      ))}
-                    </select>
-                  </label>
-                </article>
-              ))}
+      {!hasAccessToken && (
+        <>
+          <section className="card">
+            <p className="muted">{AUTH_REQUIRED_MESSAGE}</p>
+            <div className="actions">
+              <Link className="button" to="/#continue-session">Continue Session</Link>
             </div>
-          )}
+          </section>
+          <nav className="actions">
+            <Link to="/">Back home</Link>
+          </nav>
+        </>
+      )}
 
-          <div className="actions dashboard-actions">
-            <button
-              className="button"
-              type="button"
-              onClick={handleUpload}
-              disabled={isUploading || uploadableFiles.length === 0}
-            >
-              {isUploading ? 'Uploading...' : 'Upload'}
-            </button>
-          </div>
+      {hasAccessToken && (
+        <>
+          <div className="dashboard-main">
+            <section className="card dashboard-panel dashboard-upload-panel" aria-busy={isUploading}>
+              <h2>Upload Statements</h2>
+              <p className="muted">Select up to {MAX_FILES_PER_UPLOAD} files. PDF files only.</p>
 
-          {uploadWarnings.length > 0 && (
-            <div className="stack-sm">
-              <h3>Warnings</h3>
-              {uploadWarnings.map((warning, index) => (
-                <p className="text-warning" key={`${warning.originalName}-${index}`}>
-                  {warning.originalName}: {warning.reason}
-                </p>
-              ))}
-            </div>
-          )}
+              <label className="field" htmlFor="dashboard-file-input">
+                <span>Select files</span>
+              </label>
+              <input
+                id="dashboard-file-input"
+                className="input"
+                type="file"
+                accept="application/pdf,.pdf"
+                multiple
+                onChange={onSelectFiles}
+              />
 
-          {uploadRejected.length > 0 && (
-            <div className="stack-sm">
-              <h3>Rejected</h3>
-              {uploadRejected.map((item, index) => (
-                <p className="text-error" key={`${item.originalName}-${index}`}>
-                  {item.originalName}: {item.reason}
-                </p>
-              ))}
-            </div>
-          )}
-        </section>
+              {pendingFiles.length > 0 && (
+                <div className="stack-md dashboard-pending-list" role="list" aria-label="Files selected for upload">
+                  {pendingFiles.map((item) => (
+                    <article className="result-box dashboard-pending-item" key={item.localId} role="listitem">
+                      <p><strong>{item.file.name}</strong></p>
+                      <p className="muted">Size: {formatBytes(item.file.size)}</p>
+                      {item.warning && <p className="text-error">{item.warning}</p>}
 
-        <section className="card dashboard-panel dashboard-files-panel" aria-busy={isLoadingFiles}>
-          <h2>Uploaded Files</h2>
-          {isLoadingFiles && <p className="muted" role="status">Loading files...</p>}
-
-          {!isLoadingFiles && existingFiles.length === 0 && (
-            <p className="muted" role="status">No uploaded files yet.</p>
-          )}
-
-          {!isLoadingFiles && existingFiles.length > 0 && (
-            <div className="stack-md dashboard-uploaded-list" role="list" aria-label="Uploaded files">
-              {existingFiles.map((file) => {
-                const draftValue = typeDrafts[file.id] ?? file.statementType;
-                const saveDisabled = busyFileId === file.id || draftValue === file.statementType;
-
-                return (
-                  <article className="result-box dashboard-uploaded-item" key={file.id} role="listitem">
-                    <div className="dashboard-uploaded-meta">
-                      <p><strong>{file.originalName}</strong></p>
-                      <p className="muted">Uploaded: {formatDate(file.uploadedAt)}</p>
-                      <p className="muted">Size: {formatBytes(file.size)}</p>
-                      <p className="muted">Statement Type: {file.statementType}</p>
-                      <p className="muted">Auto-detected: {file.autoDetectedType ?? 'unknown'}</p>
-                      {typeof file.detectionConfidence === 'number' && (
-                        <p className="muted">
-                          Confidence: {(file.detectionConfidence * 100).toFixed(0)}%
-                        </p>
-                      )}
-                      {file.isLikelyStatement === false && (
-                        <p className="text-warning">This file may not be a bank statement.</p>
-                      )}
-                    </div>
-
-                    <div className="dashboard-uploaded-controls">
-                      <label className="field dashboard-type-field">
-                        <span>Override Type</span>
+                      <label className="field">
+                        <span>Statement Type</span>
                         <select
                           className="input"
-                          value={draftValue}
-                          onChange={(event) => updateDraftType(file.id, toStatementType(event.target.value))}
-                          disabled={busyFileId === file.id}
+                          value={item.statementType}
+                          onChange={(event) => updatePendingType(item.localId, toStatementType(event.target.value))}
                         >
                           {STATEMENT_TYPE_OPTIONS.map((option) => (
-                            <option key={option} value={option}>{option}</option>
+                            <option value={option} key={option}>{option}</option>
                           ))}
                         </select>
                       </label>
+                    </article>
+                  ))}
+                </div>
+              )}
 
-                      <div className="actions dashboard-file-actions">
-                        <button
-                          className="button button-secondary"
-                          type="button"
-                          onClick={() => saveFileType(file)}
-                          disabled={saveDisabled}
-                        >
-                          {busyFileId === file.id ? 'Saving...' : 'Save Type'}
-                        </button>
+              <div className="actions dashboard-actions">
+                <button
+                  className="button"
+                  type="button"
+                  onClick={handleUpload}
+                  disabled={isUploading || uploadableFiles.length === 0}
+                >
+                  {isUploading ? 'Uploading...' : 'Upload'}
+                </button>
+              </div>
 
-                        <button
-                          className="button button-secondary"
-                          type="button"
-                          onClick={() => handleDeleteFile(file)}
-                          disabled={busyFileId === file.id}
-                        >
-                          {busyFileId === file.id ? 'Working...' : 'Delete File'}
-                        </button>
-                      </div>
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
-          )}
-        </section>
-      </div>
+              {uploadWarnings.length > 0 && (
+                <div className="stack-sm">
+                  <h3>Warnings</h3>
+                  {uploadWarnings.map((warning, index) => (
+                    <p className="text-warning" key={`${warning.originalName}-${index}`}>
+                      {warning.originalName}: {warning.reason}
+                    </p>
+                  ))}
+                </div>
+              )}
 
-      <section className="card">
-        <h2>Danger Zone</h2>
-        <p className="muted">Delete this session and all associated uploaded files.</p>
-        <button
-          className="button danger-button"
-          type="button"
-          onClick={requestDeleteSession}
-          disabled={isDeletingSession || !sessionId}
-        >
-          {isDeletingSession ? 'Deleting session...' : 'Delete Session'}
-        </button>
-      </section>
+              {uploadRejected.length > 0 && (
+                <div className="stack-sm">
+                  <h3>Rejected</h3>
+                  {uploadRejected.map((item, index) => (
+                    <p className="text-error" key={`${item.originalName}-${index}`}>
+                      {item.originalName}: {item.reason}
+                    </p>
+                  ))}
+                </div>
+              )}
+            </section>
 
-      <nav className="actions">
-        <Link to="/sessions">Back to sessions</Link>
-        <Link to="/">Back home</Link>
-      </nav>
+            <section className="card dashboard-panel dashboard-files-panel" aria-busy={isLoadingFiles}>
+              <h2>Uploaded Files</h2>
+              {isLoadingFiles && <p className="muted" role="status">Loading files...</p>}
+
+              {!isLoadingFiles && existingFiles.length === 0 && (
+                <p className="muted" role="status">No uploaded files yet.</p>
+              )}
+
+              {!isLoadingFiles && existingFiles.length > 0 && (
+                <div className="stack-md dashboard-uploaded-list" role="list" aria-label="Uploaded files">
+                  {existingFiles.map((file) => {
+                    const draftValue = typeDrafts[file.id] ?? file.statementType;
+                    const saveDisabled = busyFileId === file.id || draftValue === file.statementType;
+                    const statusLabel = file.status ? file.status : 'uploaded';
+                    const autoDetectedSummary = typeof file.detectionConfidence === 'number'
+                      ? `${file.autoDetectedType ?? 'unknown'} (${(file.detectionConfidence * 100).toFixed(0)}%)`
+                      : (file.autoDetectedType ?? 'unknown');
+
+                    return (
+                      <article className="result-box dashboard-uploaded-item minw0" key={file.id} role="listitem">
+                        <div className="dashboard-uploaded-top minw0">
+                          <p className="dashboard-file-name break minw0"><strong>{file.originalName}</strong></p>
+                          <span className="dashboard-status-badge">
+                            {statusLabel}
+                          </span>
+                        </div>
+
+                        <dl className="dashboard-uploaded-meta-grid minw0">
+                          <div className="dashboard-meta-item minw0">
+                            <dt>Uploaded</dt>
+                            <dd className="break">{formatDate(file.uploadedAt)}</dd>
+                          </div>
+                          <div className="dashboard-meta-item minw0">
+                            <dt>Size</dt>
+                            <dd className="break">{formatBytes(file.size)}</dd>
+                          </div>
+                          <div className="dashboard-meta-item minw0">
+                            <dt>Statement Type</dt>
+                            <dd className="break">{file.statementType}</dd>
+                          </div>
+                          <div className="dashboard-meta-item minw0">
+                            <dt>Auto-detected</dt>
+                            <dd className="break">{autoDetectedSummary}</dd>
+                          </div>
+                        </dl>
+
+                        {file.isLikelyStatement === false && (
+                          <p className="text-warning">This file may not be a bank statement.</p>
+                        )}
+
+                        <div className="dashboard-uploaded-controls controls minw0">
+                          <label className="field dashboard-type-field">
+                            <span>Override Type</span>
+                            <select
+                              className="input"
+                              value={draftValue}
+                              onChange={(event) => updateDraftType(file.id, toStatementType(event.target.value))}
+                              disabled={busyFileId === file.id}
+                            >
+                              {STATEMENT_TYPE_OPTIONS.map((option) => (
+                                <option key={option} value={option}>{option}</option>
+                              ))}
+                            </select>
+                          </label>
+
+                          <div className="dashboard-file-actions controls minw0">
+                            <button
+                              className="button button-secondary"
+                              type="button"
+                              onClick={() => saveFileType(file)}
+                              disabled={saveDisabled}
+                            >
+                              {busyFileId === file.id ? 'Saving...' : 'Save Type'}
+                            </button>
+
+                            <button
+                              className="button button-secondary"
+                              type="button"
+                              onClick={() => handleDeleteFile(file)}
+                              disabled={busyFileId === file.id}
+                            >
+                              {busyFileId === file.id ? 'Working...' : 'Delete File'}
+                            </button>
+                          </div>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          </div>
+
+          <section className="card">
+            <h2>Danger Zone</h2>
+            <p className="muted">Delete this session and all associated uploaded files.</p>
+            <button
+              className="button danger-button"
+              type="button"
+              onClick={requestDeleteSession}
+              disabled={isDeletingSession || !sessionId}
+            >
+              {isDeletingSession ? 'Deleting session...' : 'Delete Session'}
+            </button>
+          </section>
+
+          <nav className="actions">
+            <Link to="/sessions">Back to sessions</Link>
+            <Link to="/">Back home</Link>
+          </nav>
+        </>
+      )}
 
       <ConfirmDialog
         open={showDeleteSessionConfirm}

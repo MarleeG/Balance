@@ -24,6 +24,10 @@ describe('SessionsService', () => {
   let storageService: {
     deleteObject: jest.Mock;
   };
+  let jwtService: {
+    sign: jest.Mock;
+    decode: jest.Mock;
+  };
 
   beforeEach(() => {
     sessionsModel = {
@@ -42,6 +46,11 @@ describe('SessionsService', () => {
       deleteObject: jest.fn(),
     };
 
+    jwtService = {
+      sign: jest.fn().mockReturnValue('bootstrap-jwt-token'),
+      decode: jest.fn().mockReturnValue({ iat: 1000, exp: 4600 }),
+    };
+
     const configService = {
       get: jest.fn().mockReturnValue(undefined),
     } as unknown as ConfigService;
@@ -51,6 +60,7 @@ describe('SessionsService', () => {
       filesModel as never,
       configService,
       storageService as never,
+      jwtService as never,
     );
     mockedGenerateSessionId.mockReset();
   });
@@ -82,7 +92,17 @@ describe('SessionsService', () => {
       sessionId: 'BBBBBBB3',
       email: 'user@example.com',
       expiresAt: expiresAt.toISOString(),
+      accessToken: 'bootstrap-jwt-token',
+      expiresIn: 3600,
     });
+    expect(jwtService.sign).toHaveBeenCalledWith(
+      {
+        email: 'user@example.com',
+        sessionId: 'BBBBBBB3',
+        type: 'session_bootstrap',
+      },
+      { expiresIn: '1h' },
+    );
   });
 
   it('deletes session and cascades delete to uploaded files', async () => {

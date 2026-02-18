@@ -35,7 +35,7 @@ export interface GenericAuthResponse {
   message: string;
 }
 
-export type AccessTokenType = 'continue_session' | 'find_sessions';
+export type AccessTokenType = 'continue_session' | 'find_sessions' | 'session_bootstrap';
 
 export interface AccessTokenPayload {
   email: string;

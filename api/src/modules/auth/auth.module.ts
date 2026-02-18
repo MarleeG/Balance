@@ -10,6 +10,46 @@ import { JwtStrategy } from './jwt.strategy';
 import { AuthRateLimiterService } from './rate-limiter.service';
 import { AuthService } from './auth.service';
 
+function getSanitizedEnvValue(configService: ConfigService, name: string): string | null {
+  const value = configService.get<string>(name);
+  if (!value) {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"'))
+    || (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    const unquoted = trimmed.slice(1, -1).trim();
+    return unquoted || null;
+  }
+
+  return trimmed;
+}
+
+function getNormalizedJwtExpiresIn(configService: ConfigService): string {
+  const raw = getSanitizedEnvValue(configService, 'JWT_EXPIRES_IN');
+  if (!raw) {
+    return '1h';
+  }
+
+  const numericSeconds = Number.parseInt(raw, 10);
+  if (Number.isInteger(numericSeconds) && numericSeconds > 0 && String(numericSeconds) === raw) {
+    return String(numericSeconds);
+  }
+
+  const normalizedTimespan = raw.toLowerCase().replace(/\s+/g, '');
+  if (/^\d+[smhd]$/.test(normalizedTimespan)) {
+    return normalizedTimespan;
+  }
+
+  return '1h';
+}
 
 @Module({
   imports: [
@@ -23,7 +63,7 @@ import { AuthService } from './auth.service';
         const secretName = nodeEnv === 'prod' || nodeEnv === 'production'
           ? 'JWT_SECRET_PRD'
           : 'JWT_SECRET_LOCAL';
-        const secret = configService.get<string>(secretName)?.trim();
+        const secret = getSanitizedEnvValue(configService, secretName);
         if (!secret) {
           throw new Error(`${secretName} must be configured.`);
         }
@@ -31,7 +71,7 @@ import { AuthService } from './auth.service';
         return {
           secret,
           signOptions: {
-            expiresIn: configService.get<string>('JWT_EXPIRES_IN')?.trim() || '1h',
+            expiresIn: getNormalizedJwtExpiresIn(configService),
           },
         };
       },

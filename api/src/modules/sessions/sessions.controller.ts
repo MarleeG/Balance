@@ -18,7 +18,7 @@ export class SessionsController {
   async listSessions(@Req() req: AuthenticatedRequest): Promise<SessionSummary[]> {
     const user = this.getAuthenticatedUser(req);
 
-    if (user.type === 'continue_session' && user.sessionId) {
+    if (user.sessionId) {
       const session = await this.sessionsService.getActiveSessionById(user.sessionId, user);
       return [session];
     }

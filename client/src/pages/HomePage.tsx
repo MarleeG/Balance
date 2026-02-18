@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ApiError, apiClient } from '../api';
+import { ApiError, apiClient, setAccessToken } from '../api';
 import { AppLayout } from '../ui/AppLayout';
 import { useToast } from '../ui/toast-provider';
 
@@ -9,6 +9,8 @@ interface CreateSessionResponse {
   sessionId: string;
   email: string;
   expiresAt: string;
+  accessToken: string;
+  expiresIn: number;
 }
 
 interface GenericMessageResponse {
@@ -17,6 +19,7 @@ interface GenericMessageResponse {
 
 const CONTINUE_GENERIC_MESSAGE = "If we found your session, you'll receive an email shortly.";
 const FIND_GENERIC_MESSAGE = "If we found sessions, you'll receive an email shortly.";
+const START_SESSION_SUCCESS_MESSAGE = 'Session created. You can upload statements now. Save your Session ID to return later.';
 
 function toApiErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof ApiError) {
@@ -69,8 +72,14 @@ export function HomePage() {
         { email },
         { skipAuth: true },
       );
+
+      if (!response.accessToken?.trim()) {
+        throw new Error('Missing access token in session creation response.');
+      }
+
+      setAccessToken(response.accessToken);
       setCreatedSession(response);
-      showToast(`Session ${response.sessionId} created.`, 'success');
+      showToast(START_SESSION_SUCCESS_MESSAGE, 'success');
     } catch (error) {
       const message = toApiErrorMessage(error, 'Unable to start a session right now. Please try again.');
       setStartError(message);
@@ -154,6 +163,14 @@ export function HomePage() {
     }
   }
 
+  async function handleUploadStatements() {
+    if (!createdSession) {
+      return;
+    }
+
+    navigate(`/sessions/${createdSession.sessionId}`);
+  }
+
   return (
     <AppLayout>
       <h1>Balance</h1>
@@ -188,6 +205,7 @@ export function HomePage() {
               <p>
                 <strong>Session ID:</strong> {createdSession.sessionId}
               </p>
+              <p className="text-success" role="status">{START_SESSION_SUCCESS_MESSAGE}</p>
               <div className="actions">
                 <button className="button button-secondary" type="button" onClick={handleCopySessionId}>
                   Copy session ID
@@ -195,7 +213,7 @@ export function HomePage() {
                 <button
                   className="button"
                   type="button"
-                  onClick={() => navigate(`/sessions/${createdSession.sessionId}`)}
+                  onClick={handleUploadStatements}
                 >
                   Upload statements
                 </button>
@@ -206,7 +224,7 @@ export function HomePage() {
           )}
         </section>
 
-        <section className="card home-card">
+        <section className="card home-card" id="continue-session">
           <h2>Continue Session</h2>
           <form className="form-grid home-form" onSubmit={handleContinueSession} aria-busy={isContinuing}>
             <label className="field">
