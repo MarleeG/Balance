@@ -227,4 +227,28 @@ describe('AuthService', () => {
 
     await expect(service.verifyToken(rawToken)).rejects.toBeInstanceOf(BadRequestException);
   });
+
+  it('normalizes quoted JWT_EXPIRES_IN when verifying token', async () => {
+    configValues.JWT_EXPIRES_IN = '"1h"';
+    const rawToken = 'quoted-exp-token';
+
+    emailTokensModel.findOneAndUpdate.mockReturnValue({
+      exec: jest.fn().mockResolvedValue({
+        email: 'user@example.com',
+        purpose: EmailTokenPurpose.FindSessions,
+        sessionId: undefined,
+      }),
+    });
+    sessionsService.listActiveSessionsForEmail.mockResolvedValue([]);
+
+    await service.verifyToken(rawToken);
+
+    expect(jwtService.sign).toHaveBeenCalledWith(
+      {
+        email: 'user@example.com',
+        type: 'find_sessions',
+      },
+      { expiresIn: '1h' },
+    );
+  });
 });

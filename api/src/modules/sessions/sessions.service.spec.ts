@@ -1,5 +1,6 @@
 import { ConfigService } from '@nestjs/config';
 import { FileStatus } from '../../db/schemas/file.schema';
+import { SessionStatus } from '../../db/schemas/session.schema';
 import { generateSessionId } from './utils/session-id';
 import { SessionsService } from './sessions.service';
 
@@ -14,10 +15,12 @@ describe('SessionsService', () => {
   let sessionsModel: {
     exists: jest.Mock;
     create: jest.Mock;
+    find: jest.Mock;
     findOne: jest.Mock;
     updateOne: jest.Mock;
   };
   let filesModel: {
+    aggregate: jest.Mock;
     find: jest.Mock;
     updateMany: jest.Mock;
   };
@@ -33,11 +36,13 @@ describe('SessionsService', () => {
     sessionsModel = {
       exists: jest.fn(),
       create: jest.fn(),
+      find: jest.fn(),
       findOne: jest.fn(),
       updateOne: jest.fn().mockReturnValue({ exec: jest.fn().mockResolvedValue({}) }),
     };
 
     filesModel = {
+      aggregate: jest.fn().mockReturnValue({ exec: jest.fn().mockResolvedValue([]) }),
       find: jest.fn().mockReturnValue({ exec: jest.fn().mockResolvedValue([]) }),
       updateMany: jest.fn().mockReturnValue({ exec: jest.fn().mockResolvedValue({}) }),
     };
@@ -172,6 +177,86 @@ describe('SessionsService', () => {
     expect(filesModel.updateMany).toHaveBeenCalledWith(
       { _id: { $in: ['file-1', 'file-2'] } },
       expect.objectContaining({ $set: expect.objectContaining({ status: 'deleted' }) }),
+    );
+  });
+
+  it('includes uploaded file count when listing active sessions', async () => {
+    sessionsModel.find.mockReturnValue({
+      sort: jest.fn().mockReturnValue({
+        exec: jest.fn().mockResolvedValue([
+          {
+            sessionId: 'SESS1111',
+            createdAt: new Date('2026-02-17T20:00:00.000Z'),
+            expiresAt: new Date('2026-02-24T20:00:00.000Z'),
+            status: SessionStatus.Active,
+          },
+          {
+            sessionId: 'SESS2222',
+            createdAt: new Date('2026-02-16T20:00:00.000Z'),
+            expiresAt: new Date('2026-02-23T20:00:00.000Z'),
+            status: SessionStatus.Active,
+          },
+        ]),
+      }),
+    });
+
+    filesModel.aggregate.mockReturnValue({
+      exec: jest.fn().mockResolvedValue([
+        { _id: 'SESS1111', count: 3 },
+      ]),
+    });
+
+    const result = await service.listActiveSessionsForEmail('User@example.com');
+
+    expect(filesModel.aggregate).toHaveBeenCalledWith([
+      {
+        $match: {
+          sessionId: { $in: ['SESS1111', 'SESS2222'] },
+          status: 'uploaded',
+        },
+      },
+      {
+        $group: {
+          _id: '$sessionId',
+          count: { $sum: 1 },
+        },
+      },
+    ]);
+    expect(result).toEqual([
+      expect.objectContaining({
+        sessionId: 'SESS1111',
+        uploadedFileCount: 3,
+      }),
+      expect.objectContaining({
+        sessionId: 'SESS2222',
+        uploadedFileCount: 0,
+      }),
+    ]);
+  });
+
+  it('includes uploaded file count when loading a single active session', async () => {
+    sessionsModel.findOne.mockReturnValue({
+      exec: jest.fn().mockResolvedValue({
+        sessionId: 'SESS3333',
+        createdAt: new Date('2026-02-18T01:00:00.000Z'),
+        expiresAt: new Date('2026-02-25T01:00:00.000Z'),
+        status: SessionStatus.Active,
+      }),
+    });
+
+    filesModel.aggregate.mockReturnValue({
+      exec: jest.fn().mockResolvedValue([
+        { _id: 'SESS3333', count: 2 },
+      ]),
+    });
+
+    const result = await service.findActiveSessionByIdAndEmail('SESS3333', 'user@example.com');
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        sessionId: 'SESS3333',
+        uploadedFileCount: 2,
+      }),
     );
   });
 });

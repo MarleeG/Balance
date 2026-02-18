@@ -10,6 +10,7 @@ interface SessionSummary {
   createdAt?: string;
   expiresAt: string;
   status: string;
+  uploadedFileCount?: number;
 }
 
 interface SessionsLocationState {
@@ -150,6 +151,7 @@ export function SessionsListPage() {
             <span>Session</span>
             <span>Created</span>
             <span>Expires</span>
+            <span>Files</span>
             <span>Status</span>
             <span>Actions</span>
           </div>
@@ -164,6 +166,10 @@ export function SessionsListPage() {
                 <p className="session-meta muted">
                   <span className="session-meta-label">Expires</span>
                   <span>{formatDate(session.expiresAt)}</span>
+                </p>
+                <p className="session-meta muted">
+                  <span className="session-meta-label">Files</span>
+                  <span>{session.uploadedFileCount ?? 0}</span>
                 </p>
                 <p className="session-meta muted">
                   <span className="session-meta-label">Status</span>
