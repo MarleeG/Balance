@@ -13,9 +13,11 @@ describe('AuthService', () => {
   let emailTokensModel: {
     create: jest.Mock;
     findOneAndUpdate: jest.Mock;
+    findOne: jest.Mock;
   };
   let sessionsService: {
     findActiveSessionByIdAndEmail: jest.Mock;
+    countActiveSessionsForEmail: jest.Mock;
     hasActiveSessionsForEmail: jest.Mock;
     listActiveSessionsForEmail: jest.Mock;
   };
@@ -29,15 +31,22 @@ describe('AuthService', () => {
     sign: jest.Mock;
     decode: jest.Mock;
   };
+  let configValues: Record<string, string | undefined>;
 
   beforeEach(() => {
     emailTokensModel = {
       create: jest.fn(),
       findOneAndUpdate: jest.fn(),
+      findOne: jest.fn().mockReturnValue({
+        select: jest.fn().mockReturnThis(),
+        lean: jest.fn().mockReturnThis(),
+        exec: jest.fn().mockResolvedValue(null),
+      }),
     };
 
     sessionsService = {
       findActiveSessionByIdAndEmail: jest.fn(),
+      countActiveSessionsForEmail: jest.fn(),
       hasActiveSessionsForEmail: jest.fn(),
       listActiveSessionsForEmail: jest.fn(),
     };
@@ -58,22 +67,14 @@ describe('AuthService', () => {
       }),
     };
 
+    configValues = {
+      APP_PUBLIC_URL: 'http://localhost:5173',
+      MAGIC_LINK_TTL_MINUTES: '15',
+      JWT_EXPIRES_IN: '1h',
+    };
+
     const configService = {
-      get: jest.fn((key: string) => {
-        if (key === 'APP_PUBLIC_URL') {
-          return 'http://localhost:5173';
-        }
-
-        if (key === 'MAGIC_LINK_TTL_MINUTES') {
-          return '15';
-        }
-
-        if (key === 'JWT_EXPIRES_IN') {
-          return '1h';
-        }
-
-        return undefined;
-      }),
+      get: jest.fn((key: string) => configValues[key]),
     } as unknown as ConfigService;
 
     service = new AuthService(
@@ -99,6 +100,78 @@ describe('AuthService', () => {
     });
     expect(emailTokensModel.create).not.toHaveBeenCalled();
     expect(emailService.sendMagicLink).not.toHaveBeenCalled();
+  });
+
+  it('sends email for request-sessions when active sessions exist', async () => {
+    sessionsService.countActiveSessionsForEmail.mockResolvedValue(2);
+    emailTokensModel.create.mockResolvedValue({});
+
+    const result = await service.requestSessions(
+      { email: ' User@Example.com ' },
+      { ip: '127.0.0.1', userAgent: 'jest' },
+    );
+
+    expect(result).toEqual({
+      message: "If we found sessions, you'll receive an email shortly.",
+    });
+    expect(sessionsService.countActiveSessionsForEmail).toHaveBeenCalledWith('user@example.com');
+    expect(emailTokensModel.create).toHaveBeenCalledTimes(1);
+
+    const createInput = emailTokensModel.create.mock.calls[0][0];
+    expect(createInput).toEqual(expect.objectContaining({
+      email: 'user@example.com',
+      purpose: EmailTokenPurpose.FindSessions,
+      tokenHash: expect.any(String),
+      createdAt: expect.any(Date),
+      expiresAt: expect.any(Date),
+      usedAt: null,
+      ip: '127.0.0.1',
+      userAgent: 'jest',
+    }));
+    expect(createInput.tokenHash).toHaveLength(64);
+
+    expect(emailService.sendMagicLink).toHaveBeenCalledTimes(1);
+    expect(emailService.sendMagicLink).toHaveBeenCalledWith(
+      'user@example.com',
+      expect.any(String),
+    );
+  });
+
+  it('does not send email for request-sessions when no active sessions exist', async () => {
+    sessionsService.countActiveSessionsForEmail.mockResolvedValue(0);
+
+    const result = await service.requestSessions(
+      { email: 'user@example.com' },
+      { ip: '127.0.0.1', userAgent: 'jest' },
+    );
+
+    expect(result).toEqual({
+      message: "If we found sessions, you'll receive an email shortly.",
+    });
+    expect(sessionsService.countActiveSessionsForEmail).toHaveBeenCalledWith('user@example.com');
+    expect(emailTokensModel.create).not.toHaveBeenCalled();
+    expect(emailService.sendMagicLink).not.toHaveBeenCalled();
+  });
+
+  it('uses MAGIC_LINK_TTL_MINUTES as integer minutes when creating email tokens', async () => {
+    configValues.MAGIC_LINK_TTL_MINUTES = '"30"';
+    sessionsService.countActiveSessionsForEmail.mockResolvedValue(1);
+    emailTokensModel.create.mockResolvedValue({});
+
+    await service.requestSessions(
+      { email: 'user@example.com' },
+      { ip: '127.0.0.1', userAgent: 'jest' },
+    );
+
+    expect(emailTokensModel.create).toHaveBeenCalledTimes(1);
+    const createInput = emailTokensModel.create.mock.calls[0][0] as {
+      createdAt: Date;
+      expiresAt: Date;
+    };
+
+    expect(createInput.createdAt).toBeInstanceOf(Date);
+    expect(createInput.expiresAt).toBeInstanceOf(Date);
+    expect(createInput.expiresAt.getTime() - createInput.createdAt.getTime()).toBe(30 * 60 * 1000);
   });
 
   it('marks token as used and rejects reuse', async () => {
@@ -128,6 +201,7 @@ describe('AuthService', () => {
 
     const first = await service.verifyToken(rawToken);
     expect(first).toEqual({
+      ok: true,
       accessToken: 'signed-jwt-token',
       expiresIn: 3600,
       sessions: [
@@ -141,6 +215,8 @@ describe('AuthService', () => {
 
     const firstCallFilter = emailTokensModel.findOneAndUpdate.mock.calls[0][0];
     expect(firstCallFilter.tokenHash).toBe(hashed);
+    expect(firstCallFilter.usedAt).toBeNull();
+    expect(firstCallFilter.expiresAt).toEqual(expect.objectContaining({ $gt: expect.any(Date) }));
     expect(jwtService.sign).toHaveBeenCalledWith(
       {
         email: 'user@example.com',

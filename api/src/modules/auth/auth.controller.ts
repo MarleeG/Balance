@@ -1,6 +1,6 @@
-import { Body, Controller, Get, Post, Query, Req } from '@nestjs/common';
+import { Body, Controller, Get, NotFoundException, Post, Query, Req } from '@nestjs/common';
 import { Request } from 'express';
-import { AuthService, GenericAuthResponse, VerifyResponse } from './auth.service';
+import { AuthEmailDebugResponse, AuthService, GenericAuthResponse, VerifyResponse } from './auth.service';
 import { RequestLinkDto } from './dto/request-link.dto';
 import { RequestSessionsDto } from './dto/request-sessions.dto';
 import { VerifyDto } from './dto/verify.dto';
@@ -19,9 +19,23 @@ export class AuthController {
     return this.authService.requestSessions(dto, this.getRequestContext(req));
   }
 
+  @Post('verify')
+  verifyByPost(@Body() dto: VerifyDto): Promise<VerifyResponse> {
+    return this.authService.verifyToken(dto.token);
+  }
+
   @Get('verify')
   verify(@Query() dto: VerifyDto): Promise<VerifyResponse> {
     return this.authService.verifyToken(dto.token);
+  }
+
+  @Get('debug/email')
+  getEmailDebug(): AuthEmailDebugResponse {
+    if (!this.authService.isDebugEmailEndpointEnabled()) {
+      throw new NotFoundException('Not found.');
+    }
+
+    return this.authService.getEmailDebugConfig();
   }
 
   private getRequestContext(req: Request): { ip?: string; userAgent?: string } {

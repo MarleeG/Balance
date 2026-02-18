@@ -45,6 +45,9 @@ export class Session {
 
   @Prop()
   deletedAt?: Date;
+
+  createdAt?: Date;
+  updatedAt?: Date;
 }
 
 export const SessionSchema = SchemaFactory.createForClass(Session);

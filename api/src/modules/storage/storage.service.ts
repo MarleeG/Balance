@@ -28,9 +28,31 @@ function normalizeEnv(value: string | undefined): string | undefined {
 @Injectable()
 export class StorageService {
   private readonly logger = new Logger(StorageService.name);
-  private readonly s3Client: S3Client;
+  private s3Client: S3Client | null = null;
 
-  constructor(private readonly configService: ConfigService) {
+  constructor(private readonly configService: ConfigService) {}
+
+  async uploadObject({ bucket, key, body, contentType }: UploadObjectParams): Promise<void> {
+    await this.getS3Client().send(new PutObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      Body: body,
+      ContentType: contentType,
+    }));
+  }
+
+  async deleteObject(bucket: string, key: string): Promise<void> {
+    await this.getS3Client().send(new DeleteObjectCommand({
+      Bucket: bucket,
+      Key: key,
+    }));
+  }
+
+  private getS3Client(): S3Client {
+    if (this.s3Client) {
+      return this.s3Client;
+    }
+
     const region = this.getRequiredEnv('AWS_REGION');
     const accessKeyId = this.getRequiredEnv('AWS_ACCESS_KEY_ID');
     const secretAccessKey = this.getRequiredEnv('AWS_SECRET_ACCESS_KEY');
@@ -51,22 +73,8 @@ export class StorageService {
     if (endpoint) {
       this.logger.log(`Using custom S3 endpoint: ${endpoint}`);
     }
-  }
 
-  async uploadObject({ bucket, key, body, contentType }: UploadObjectParams): Promise<void> {
-    await this.s3Client.send(new PutObjectCommand({
-      Bucket: bucket,
-      Key: key,
-      Body: body,
-      ContentType: contentType,
-    }));
-  }
-
-  async deleteObject(bucket: string, key: string): Promise<void> {
-    await this.s3Client.send(new DeleteObjectCommand({
-      Bucket: bucket,
-      Key: key,
-    }));
+    return this.s3Client;
   }
 
   private getRequiredEnv(name: string): string {

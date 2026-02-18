@@ -11,6 +11,7 @@ interface VerifiedSession {
 }
 
 interface VerifyResponse {
+  ok?: boolean;
   accessToken: string;
   expiresIn: number;
   sessions: VerifiedSession[];
@@ -18,6 +19,19 @@ interface VerifyResponse {
 
 const INVALID_LINK_MESSAGE = 'This link is invalid or expired. Request a new link.';
 const VERIFYING_MESSAGE = 'Verifying your secure link...';
+const VERIFY_SUCCESS_MESSAGE = 'Secure link verified. Redirecting to your sessions.';
+
+async function verifyMagicLink(token: string, signal: AbortSignal): Promise<VerifyResponse> {
+  return apiClient.post<VerifyResponse>(
+    '/auth/verify',
+    { token },
+    {
+      skipAuth: true,
+      signal,
+      credentials: 'include',
+    },
+  );
+}
 
 export function MagicLinkVerifyPage() {
   const navigate = useNavigate();
@@ -25,10 +39,12 @@ export function MagicLinkVerifyPage() {
   const [searchParams] = useSearchParams();
   const token = searchParams.get('token')?.trim() ?? '';
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isVerifying, setIsVerifying] = useState(true);
 
   useEffect(() => {
     if (!token) {
       setErrorMessage(INVALID_LINK_MESSAGE);
+      setIsVerifying(false);
       showToast(INVALID_LINK_MESSAGE, 'error');
       return;
     }
@@ -37,20 +53,22 @@ export function MagicLinkVerifyPage() {
     const abortController = new AbortController();
 
     const verify = async () => {
+      setIsVerifying(true);
       try {
-        const response = await apiClient.get<VerifyResponse>(
-          `/auth/verify?token=${encodeURIComponent(token)}`,
-          {
-            skipAuth: true,
-            signal: abortController.signal,
-          },
-        );
-
-        if (!isActive || !response.accessToken) {
+        const response = await verifyMagicLink(token, abortController.signal);
+        if (!isActive) {
           return;
         }
 
+        if (!response.accessToken?.trim()) {
+          throw new Error('Missing access token in verify response.');
+        }
+        if (response.ok === false) {
+          throw new Error('Verify response returned not ok.');
+        }
+
         setAccessToken(response.accessToken);
+        showToast(VERIFY_SUCCESS_MESSAGE, 'success');
         navigate('/sessions', {
           replace: true,
           state: {
@@ -68,6 +86,10 @@ export function MagicLinkVerifyPage() {
 
         setErrorMessage(INVALID_LINK_MESSAGE);
         showToast(INVALID_LINK_MESSAGE, 'error');
+      } finally {
+        if (isActive) {
+          setIsVerifying(false);
+        }
       }
     };
 
@@ -82,15 +104,15 @@ export function MagicLinkVerifyPage() {
   return (
     <AppLayout>
       <h1>Magic Link Verification</h1>
-      {!errorMessage && <p className="muted page-lead" role="status">{VERIFYING_MESSAGE}</p>}
+      {isVerifying && !errorMessage && <p className="muted page-lead" role="status">{VERIFYING_MESSAGE}</p>}
       {errorMessage && (
         <section className="card">
           <p className="text-error" role="alert">{errorMessage}</p>
+          <div className="actions">
+            <Link className="button button-secondary" to="/#continue-session">Request new link</Link>
+          </div>
         </section>
       )}
-      <nav className="actions">
-        <Link to="/">Request a new link</Link>
-      </nav>
     </AppLayout>
   );
 }

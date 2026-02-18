@@ -36,12 +36,19 @@ export interface CreateSessionResponse {
 
 export interface SessionSummary {
   sessionId: string;
+  createdAt: string;
   expiresAt: string;
   status: SessionStatus;
 }
 
 export interface DeleteSessionResponse {
   deleted: boolean;
+}
+
+interface ActiveSessionFilter {
+  status: SessionStatus.Active;
+  expiresAt: { $gt: Date };
+  $or: Array<{ deletedAt: { $exists: false } } | { deletedAt: null }>;
 }
 
 @Injectable()
@@ -107,10 +114,11 @@ export class SessionsService {
   }
 
   async findActiveSessionByIdAndEmail(sessionId: string, email: string): Promise<SessionSummary | null> {
+    const normalizedEmail = this.normalizeEmail(email);
     const session = await this.sessionsModel.findOne({
       ...this.getActiveSessionFilter(),
       sessionId,
-      email,
+      email: normalizedEmail,
     }).exec();
 
     if (!session) {
@@ -121,18 +129,22 @@ export class SessionsService {
   }
 
   async hasActiveSessionsForEmail(email: string): Promise<boolean> {
-    const existing = await this.sessionsModel.exists({
-      ...this.getActiveSessionFilter(),
-      email,
-    });
+    return (await this.countActiveSessionsForEmail(email)) > 0;
+  }
 
-    return Boolean(existing);
+  async countActiveSessionsForEmail(email: string): Promise<number> {
+    const normalizedEmail = this.normalizeEmail(email);
+    return this.sessionsModel.countDocuments({
+      ...this.getActiveSessionFilter(),
+      email: normalizedEmail,
+    }).exec();
   }
 
   async listActiveSessionsForEmail(email: string): Promise<SessionSummary[]> {
+    const normalizedEmail = this.normalizeEmail(email);
     const sessions = await this.sessionsModel.find({
       ...this.getActiveSessionFilter(),
-      email,
+      email: normalizedEmail,
     }).sort({ createdAt: -1 }).exec();
 
     return sessions.map((session) => this.toSessionSummary(session));
@@ -204,9 +216,10 @@ export class SessionsService {
       throw new ForbiddenException(SESSION_ACCESS_FORBIDDEN_MESSAGE);
     }
 
+    const normalizedEmail = this.normalizeEmail(user.email);
     const session = await this.sessionsModel.findOne({
       sessionId,
-      email: user.email,
+      email: normalizedEmail,
       status: { $ne: SessionStatus.Deleted },
     }).exec();
 
@@ -242,19 +255,27 @@ export class SessionsService {
     return possibleMongoError.code === 11000;
   }
 
-  private getActiveSessionFilter(): { status: SessionStatus; expiresAt: { $gt: Date } } {
+  private getActiveSessionFilter(): ActiveSessionFilter {
     return {
       status: SessionStatus.Active,
       expiresAt: { $gt: new Date() },
+      $or: [{ deletedAt: { $exists: false } }, { deletedAt: null }],
     };
   }
 
-  private toSessionSummary(session: Pick<Session, 'sessionId' | 'expiresAt' | 'status'>): SessionSummary {
+  private toSessionSummary(session: Pick<Session, 'sessionId' | 'createdAt' | 'expiresAt' | 'status'>): SessionSummary {
+    const createdAt = 'createdAt' in session && session.createdAt ? new Date(session.createdAt).toISOString() : '';
+
     return {
       sessionId: session.sessionId,
+      createdAt,
       expiresAt: new Date(session.expiresAt).toISOString(),
       status: session.status,
     };
+  }
+
+  private normalizeEmail(email: string): string {
+    return email.trim().toLowerCase();
   }
 
   private createSessionBootstrapAccessToken(
