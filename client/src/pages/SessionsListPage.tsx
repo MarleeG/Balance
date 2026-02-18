@@ -27,7 +27,10 @@ export function SessionsListPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
+  const [isDeletingSelected, setIsDeletingSelected] = useState(false);
   const [pendingDeleteSessionId, setPendingDeleteSessionId] = useState<string | null>(null);
+  const [isBulkDeleteConfirmOpen, setIsBulkDeleteConfirmOpen] = useState(false);
+  const [selectedSessionIds, setSelectedSessionIds] = useState<string[]>([]);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const sortedSessions = useMemo(
@@ -38,6 +41,15 @@ export function SessionsListPage() {
     }),
     [sessions],
   );
+  const allSessionIds = useMemo(() => sortedSessions.map((session) => session.sessionId), [sortedSessions]);
+  const selectedSessionIdSet = useMemo(() => new Set(selectedSessionIds), [selectedSessionIds]);
+  const allSelected = allSessionIds.length > 0 && selectedSessionIds.length === allSessionIds.length;
+  const isDeleting = deletingSessionId !== null || isDeletingSelected;
+
+  useEffect(() => {
+    setSelectedSessionIds((current) =>
+      current.filter((id) => sessions.some((session) => session.sessionId === id)));
+  }, [sessions]);
 
   useEffect(() => {
     let isActive = true;
@@ -103,6 +115,7 @@ export function SessionsListPage() {
     try {
       await apiClient.delete<{ deleted: boolean }>(`/sessions/${sessionId}`);
       setSessions((current) => current.filter((session) => session.sessionId !== sessionId));
+      setSelectedSessionIds((current) => current.filter((id) => id !== sessionId));
       showToast(`Session ${sessionId} deleted.`, 'success');
       setPendingDeleteSessionId(null);
     } catch {
@@ -111,6 +124,69 @@ export function SessionsListPage() {
     } finally {
       setDeletingSessionId(null);
     }
+  }
+
+  async function handleDeleteSelectedSessions() {
+    const sessionIdsToDelete = [...selectedSessionIds];
+    if (sessionIdsToDelete.length === 0) {
+      return;
+    }
+
+    setDeleteError(null);
+    setIsDeletingSelected(true);
+
+    const deletedSessionIds: string[] = [];
+    for (const sessionId of sessionIdsToDelete) {
+      try {
+        await apiClient.delete<{ deleted: boolean }>(`/sessions/${sessionId}`);
+        deletedSessionIds.push(sessionId);
+      } catch {
+        continue;
+      }
+    }
+
+    const failedCount = sessionIdsToDelete.length - deletedSessionIds.length;
+
+    if (deletedSessionIds.length > 0) {
+      const deletedSet = new Set(deletedSessionIds);
+      setSessions((current) => current.filter((session) => !deletedSet.has(session.sessionId)));
+      setSelectedSessionIds((current) => current.filter((id) => !deletedSet.has(id)));
+    }
+
+    if (failedCount === 0) {
+      const deletedLabel = `${deletedSessionIds.length} session${deletedSessionIds.length === 1 ? '' : 's'}`;
+      showToast(`Deleted ${deletedLabel}.`, 'success');
+    } else if (deletedSessionIds.length === 0) {
+      const message = 'Unable to delete selected sessions right now. Please try again.';
+      setDeleteError(message);
+      showToast(message, 'error');
+    } else {
+      const deletedLabel = `${deletedSessionIds.length} session${deletedSessionIds.length === 1 ? '' : 's'}`;
+      const failedLabel = `${failedCount} session${failedCount === 1 ? '' : 's'}`;
+      const message = `Deleted ${deletedLabel}. ${failedLabel} could not be deleted.`;
+      setDeleteError(message);
+      showToast(message, 'error');
+    }
+
+    setIsBulkDeleteConfirmOpen(false);
+    setIsDeletingSelected(false);
+  }
+
+  function toggleSessionSelection(sessionId: string, selected: boolean) {
+    setSelectedSessionIds((current) => {
+      if (selected) {
+        if (current.includes(sessionId)) {
+          return current;
+        }
+        return [...current, sessionId];
+      }
+
+      return current.filter((id) => id !== sessionId);
+    });
+  }
+
+  function toggleSelectAllSessions(checked: boolean) {
+    setSelectedSessionIds(checked ? allSessionIds : []);
   }
 
   function formatDate(dateValue: string): string {
@@ -146,7 +222,28 @@ export function SessionsListPage() {
           <p role="status">No sessions found from this link. Request a new magic link if needed.</p>
         </section>
       ) : !loadError ? (
-        <div className="sessions-list" role="list" aria-label="Available sessions" aria-busy={deletingSessionId !== null}>
+        <div className="sessions-list" role="list" aria-label="Available sessions" aria-busy={isDeleting}>
+          <div className="sessions-list-controls">
+            <label className="sessions-select-all">
+              <input
+                className="session-select-input"
+                type="checkbox"
+                checked={allSelected}
+                onChange={(event) => toggleSelectAllSessions(event.target.checked)}
+                disabled={isDeleting || allSessionIds.length === 0}
+              />
+              <span>Select all</span>
+            </label>
+            <span className="muted sessions-selected-count">{selectedSessionIds.length} selected</span>
+            <button
+              className="button danger-button"
+              type="button"
+              onClick={() => setIsBulkDeleteConfirmOpen(true)}
+              disabled={isDeleting || selectedSessionIds.length === 0}
+            >
+              Delete selected
+            </button>
+          </div>
           <div className="sessions-list-head" aria-hidden="true">
             <span>Session</span>
             <span>Created</span>
@@ -158,7 +255,20 @@ export function SessionsListPage() {
           {sortedSessions.map((session) => (
             <section className="card session-item" key={session.sessionId} role="listitem">
               <div className="session-details">
-                <p className="session-id"><strong>{session.sessionId}</strong></p>
+                <p className="session-id session-id-row">
+                  <label className="session-select-inline">
+                    <input
+                      className="session-select-input"
+                      type="checkbox"
+                      checked={selectedSessionIdSet.has(session.sessionId)}
+                      onChange={(event) => toggleSessionSelection(session.sessionId, event.target.checked)}
+                      disabled={isDeleting}
+                      aria-label={`Select session ${session.sessionId}`}
+                    />
+                    <span className="sr-only">Select session {session.sessionId}</span>
+                  </label>
+                  <strong>{session.sessionId}</strong>
+                </p>
                 <p className="session-meta muted">
                   <span className="session-meta-label">Created</span>
                   <span>{session.createdAt ? formatDate(session.createdAt) : 'Not available'}</span>
@@ -181,6 +291,7 @@ export function SessionsListPage() {
                   className="button"
                   type="button"
                   onClick={() => navigate(`/sessions/${session.sessionId}`)}
+                  disabled={isDeleting}
                 >
                   Open
                 </button>
@@ -188,7 +299,7 @@ export function SessionsListPage() {
                   className="button button-secondary"
                   type="button"
                   onClick={() => setPendingDeleteSessionId(session.sessionId)}
-                  disabled={deletingSessionId === session.sessionId}
+                  disabled={isDeleting}
                 >
                   {deletingSessionId === session.sessionId ? 'Deleting...' : 'Delete session'}
                 </button>
@@ -220,6 +331,25 @@ export function SessionsListPage() {
           }
           return handleDeleteSession(pendingDeleteSessionId);
         }}
+      />
+
+      <ConfirmDialog
+        open={isBulkDeleteConfirmOpen}
+        title="Delete selected sessions?"
+        message={
+          selectedSessionIds.length === 1
+            ? `This will permanently remove session ${selectedSessionIds[0]}.`
+            : `This will permanently remove ${selectedSessionIds.length} sessions.`
+        }
+        confirmLabel={
+          selectedSessionIds.length === 1
+            ? 'Delete 1 session'
+            : `Delete ${selectedSessionIds.length} sessions`
+        }
+        destructive
+        busy={isDeletingSelected}
+        onCancel={() => setIsBulkDeleteConfirmOpen(false)}
+        onConfirm={() => handleDeleteSelectedSessions()}
       />
     </AppLayout>
   );
