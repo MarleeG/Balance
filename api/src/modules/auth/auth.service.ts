@@ -284,9 +284,19 @@ export class AuthService {
   }
 
   private getJwtExpiresIn(): string {
-    const raw = this.configService.get<string>('JWT_EXPIRES_IN')?.trim();
-    if (raw) {
-      return raw;
+    const raw = this.getSanitizedConfigValue('JWT_EXPIRES_IN');
+    if (!raw) {
+      return DEFAULT_JWT_EXPIRES_IN;
+    }
+
+    const numericSeconds = Number.parseInt(raw, 10);
+    if (Number.isInteger(numericSeconds) && numericSeconds > 0 && String(numericSeconds) === raw) {
+      return String(numericSeconds);
+    }
+
+    const normalizedTimespan = raw.toLowerCase().replace(/\s+/g, '');
+    if (/^\d+[smhd]$/.test(normalizedTimespan)) {
+      return normalizedTimespan;
     }
 
     return DEFAULT_JWT_EXPIRES_IN;

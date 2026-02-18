@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { apiClient, setAccessToken } from '../api';
 import { AppLayout } from '../ui/AppLayout';
@@ -6,8 +6,10 @@ import { useToast } from '../ui/toast-provider';
 
 interface VerifiedSession {
   sessionId: string;
+  createdAt?: string;
   expiresAt: string;
   status: string;
+  uploadedFileCount?: number;
 }
 
 interface VerifyResponse {
@@ -21,13 +23,12 @@ const INVALID_LINK_MESSAGE = 'This link is invalid or expired. Request a new lin
 const VERIFYING_MESSAGE = 'Verifying your secure link...';
 const VERIFY_SUCCESS_MESSAGE = 'Secure link verified. Redirecting to your sessions.';
 
-async function verifyMagicLink(token: string, signal: AbortSignal): Promise<VerifyResponse> {
+async function verifyMagicLink(token: string): Promise<VerifyResponse> {
   return apiClient.post<VerifyResponse>(
     '/auth/verify',
     { token },
     {
       skipAuth: true,
-      signal,
       credentials: 'include',
     },
   );
@@ -40,6 +41,8 @@ export function MagicLinkVerifyPage() {
   const token = searchParams.get('token')?.trim() ?? '';
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isVerifying, setIsVerifying] = useState(true);
+  // React StrictMode can invoke effects twice in dev; reuse the same verify request per token.
+  const verifyRequestRef = useRef<{ token: string; promise: Promise<VerifyResponse> } | null>(null);
 
   useEffect(() => {
     if (!token) {
@@ -50,12 +53,17 @@ export function MagicLinkVerifyPage() {
     }
 
     let isActive = true;
-    const abortController = new AbortController();
 
     const verify = async () => {
       setIsVerifying(true);
       try {
-        const response = await verifyMagicLink(token, abortController.signal);
+        const activeRequest = verifyRequestRef.current;
+        const verifyRequest = activeRequest?.token === token
+          ? activeRequest.promise
+          : verifyMagicLink(token);
+
+        verifyRequestRef.current = { token, promise: verifyRequest };
+        const response = await verifyRequest;
         if (!isActive) {
           return;
         }
@@ -76,10 +84,6 @@ export function MagicLinkVerifyPage() {
           },
         });
       } catch (error) {
-        if (error instanceof DOMException && error.name === 'AbortError') {
-          return;
-        }
-
         if (!isActive) {
           return;
         }
@@ -97,7 +101,6 @@ export function MagicLinkVerifyPage() {
 
     return () => {
       isActive = false;
-      abortController.abort();
     };
   }, [navigate, showToast, token]);
 

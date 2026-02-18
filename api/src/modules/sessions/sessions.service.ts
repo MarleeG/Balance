@@ -39,6 +39,7 @@ export interface SessionSummary {
   createdAt: string;
   expiresAt: string;
   status: SessionStatus;
+  uploadedFileCount: number;
 }
 
 export interface DeleteSessionResponse {
@@ -125,7 +126,8 @@ export class SessionsService {
       return null;
     }
 
-    return this.toSessionSummary(session);
+    const uploadedFileCounts = await this.getUploadedFileCountsBySessionIds([session.sessionId]);
+    return this.toSessionSummary(session, uploadedFileCounts.get(session.sessionId) ?? 0);
   }
 
   async hasActiveSessionsForEmail(email: string): Promise<boolean> {
@@ -147,7 +149,11 @@ export class SessionsService {
       email: normalizedEmail,
     }).sort({ createdAt: -1 }).exec();
 
-    return sessions.map((session) => this.toSessionSummary(session));
+    const uploadedFileCounts = await this.getUploadedFileCountsBySessionIds(
+      sessions.map((session) => session.sessionId),
+    );
+
+    return sessions.map((session) => this.toSessionSummary(session, uploadedFileCounts.get(session.sessionId) ?? 0));
   }
 
   async getActiveSessionById(sessionId: string, user: { email: string; sessionId?: string }): Promise<SessionSummary> {
@@ -263,7 +269,10 @@ export class SessionsService {
     };
   }
 
-  private toSessionSummary(session: Pick<Session, 'sessionId' | 'createdAt' | 'expiresAt' | 'status'>): SessionSummary {
+  private toSessionSummary(
+    session: Pick<Session, 'sessionId' | 'createdAt' | 'expiresAt' | 'status'>,
+    uploadedFileCount: number,
+  ): SessionSummary {
     const createdAt = 'createdAt' in session && session.createdAt ? new Date(session.createdAt).toISOString() : '';
 
     return {
@@ -271,7 +280,39 @@ export class SessionsService {
       createdAt,
       expiresAt: new Date(session.expiresAt).toISOString(),
       status: session.status,
+      uploadedFileCount,
     };
+  }
+
+  private async getUploadedFileCountsBySessionIds(sessionIds: string[]): Promise<Map<string, number>> {
+    const countsBySessionId = new Map<string, number>();
+    if (sessionIds.length === 0) {
+      return countsBySessionId;
+    }
+
+    const uniqueSessionIds = [...new Set(sessionIds)];
+    const countRows = await this.filesModel.aggregate<{ _id: string; count: number }>([
+      {
+        $match: {
+          sessionId: { $in: uniqueSessionIds },
+          status: FileStatus.Uploaded,
+        },
+      },
+      {
+        $group: {
+          _id: '$sessionId',
+          count: { $sum: 1 },
+        },
+      },
+    ]).exec();
+
+    for (const row of countRows) {
+      if (typeof row._id === 'string' && Number.isFinite(row.count)) {
+        countsBySessionId.set(row._id, row.count);
+      }
+    }
+
+    return countsBySessionId;
   }
 
   private normalizeEmail(email: string): string {
