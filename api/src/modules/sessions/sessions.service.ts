@@ -193,14 +193,19 @@ export class SessionsService {
       status: FileStatus.Uploaded,
     }).exec();
 
-    for (const file of uploadedFiles) {
-      try {
-        await this.storageService.deleteObject(file.s3Bucket, file.s3Key);
-      } catch (error) {
-        const fileId = file._id?.toString() ?? 'unknown';
-        const details = error instanceof Error ? error.message : String(error);
-        this.logger.warn(`Failed to delete S3 object for file ${fileId}: ${details}`);
+    const deleteResults = await Promise.allSettled(
+      uploadedFiles.map(async (file) => this.storageService.deleteObject(file.s3Bucket, file.s3Key)),
+    );
+
+    for (let i = 0; i < deleteResults.length; i += 1) {
+      const result = deleteResults[i];
+      if (result.status === 'fulfilled') {
+        continue;
       }
+
+      const fileId = uploadedFiles[i]?._id?.toString() ?? 'unknown';
+      const details = result.reason instanceof Error ? result.reason.message : String(result.reason);
+      this.logger.warn(`Failed to delete S3 object for file ${fileId}: ${details}`);
     }
 
     if (uploadedFiles.length > 0) {
