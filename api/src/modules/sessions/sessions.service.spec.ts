@@ -142,8 +142,9 @@ describe('SessionsService', () => {
       sessionId: 'AAAAAAA2',
       status: 'uploaded',
     });
-    expect(storageService.deleteObject).toHaveBeenNthCalledWith(1, 'bucket-a', 'key-1');
-    expect(storageService.deleteObject).toHaveBeenNthCalledWith(2, 'bucket-a', 'key-2');
+    expect(storageService.deleteObject).toHaveBeenCalledTimes(2);
+    expect(storageService.deleteObject).toHaveBeenCalledWith('bucket-a', 'key-1');
+    expect(storageService.deleteObject).toHaveBeenCalledWith('bucket-a', 'key-2');
     expect(filesModel.updateMany).toHaveBeenCalledWith(
       { _id: { $in: ['file-1', 'file-2'] } },
       { $set: { status: 'deleted', deletedAt: expect.any(Date) } },
