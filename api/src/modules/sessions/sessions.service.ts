@@ -8,10 +8,12 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { JwtService } from '@nestjs/jwt';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { FileDocument, FileRecord, FileStatus } from '../../db/schemas/file.schema';
 import { Session, SessionDocument, SessionStatus } from '../../db/schemas/session.schema';
+import type { AccessTokenPayload } from '../auth/auth.service';
 import { StorageService } from '../storage/storage.service';
 import type { CreateSessionDto } from './dto/create-session.dto';
 import { generateSessionId } from './utils/session-id';
@@ -21,11 +23,15 @@ const SESSION_ID_RETRY_LIMIT = 5;
 const SESSION_ID_COLLISION_MESSAGE = 'Unable to create a unique session ID after 5 attempts.';
 const SESSION_NOT_FOUND_MESSAGE = 'Session not found.';
 const SESSION_ACCESS_FORBIDDEN_MESSAGE = 'Access to this session is not allowed.';
+const DEFAULT_BOOTSTRAP_ACCESS_TOKEN_EXPIRES_IN = '1h';
+const DEFAULT_BOOTSTRAP_ACCESS_TOKEN_EXPIRES_SECONDS = 60 * 60;
 
 export interface CreateSessionResponse {
   sessionId: string;
   email: string;
   expiresAt: string;
+  accessToken: string;
+  expiresIn: number;
 }
 
 export interface SessionSummary {
@@ -49,6 +55,7 @@ export class SessionsService {
     private readonly filesModel: Model<FileDocument>,
     private readonly configService: ConfigService,
     private readonly storageService: StorageService,
+    private readonly jwtService: JwtService,
   ) {}
 
   async createSession(dto: CreateSessionDto): Promise<CreateSessionResponse> {
@@ -72,16 +79,24 @@ export class SessionsService {
           lastAccessedAt: now,
         });
 
+        const { accessToken, expiresIn } = this.createSessionBootstrapAccessToken(created.email, created.sessionId);
+
         return {
           sessionId: created.sessionId,
           email: created.email,
           expiresAt: new Date(created.expiresAt).toISOString(),
+          accessToken,
+          expiresIn,
         };
       } catch (error) {
         if (this.isDuplicateKeyError(error)) {
           continue;
         }
 
+        this.logger.error(
+          'Failed to create session record or bootstrap token.',
+          error instanceof Error ? error.stack : String(error),
+        );
         throw new HttpException('Failed to create session.', HttpStatus.INTERNAL_SERVER_ERROR, {
           cause: error,
         });
@@ -240,5 +255,112 @@ export class SessionsService {
       expiresAt: new Date(session.expiresAt).toISOString(),
       status: session.status,
     };
+  }
+
+  private createSessionBootstrapAccessToken(
+    email: string,
+    sessionId: string,
+  ): { accessToken: string; expiresIn: number } {
+    const payload: AccessTokenPayload = {
+      email,
+      sessionId,
+      type: 'session_bootstrap',
+    };
+
+    const accessToken = this.jwtService.sign(payload, {
+      expiresIn: this.getBootstrapAccessTokenExpiresIn(),
+    });
+
+    return {
+      accessToken,
+      expiresIn: this.getExpiresInSeconds(accessToken),
+    };
+  }
+
+  private getBootstrapAccessTokenExpiresIn(): string {
+    const raw = this.getSanitizedEnvValue('JWT_EXPIRES_IN');
+    if (!raw) {
+      return DEFAULT_BOOTSTRAP_ACCESS_TOKEN_EXPIRES_IN;
+    }
+
+    const numericSeconds = Number.parseInt(raw, 10);
+    if (Number.isInteger(numericSeconds) && numericSeconds > 0 && String(numericSeconds) === raw) {
+      return String(numericSeconds);
+    }
+
+    const normalizedTimespan = raw.toLowerCase().replace(/\s+/g, '');
+    if (/^\d+[smhd]$/.test(normalizedTimespan)) {
+      return normalizedTimespan;
+    }
+
+    return DEFAULT_BOOTSTRAP_ACCESS_TOKEN_EXPIRES_IN;
+  }
+
+  private getExpiresInSeconds(accessToken: string): number {
+    const decoded = this.jwtService.decode(accessToken);
+    if (decoded && typeof decoded === 'object' && 'exp' in decoded && 'iat' in decoded) {
+      const exp = Number((decoded as { exp?: number }).exp);
+      const iat = Number((decoded as { iat?: number }).iat);
+
+      if (Number.isFinite(exp) && Number.isFinite(iat) && exp > iat) {
+        return exp - iat;
+      }
+    }
+
+    const fallback = this.parseExpiresInToSeconds(this.getBootstrapAccessTokenExpiresIn());
+    return fallback ?? DEFAULT_BOOTSTRAP_ACCESS_TOKEN_EXPIRES_SECONDS;
+  }
+
+  private parseExpiresInToSeconds(value: string): number | null {
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) {
+      return null;
+    }
+
+    const match = normalized.match(/^(\d+)([smhd]?)$/);
+    if (!match) {
+      return null;
+    }
+
+    const amount = Number.parseInt(match[1], 10);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return null;
+    }
+
+    switch (match[2]) {
+      case '':
+      case 's':
+        return amount;
+      case 'm':
+        return amount * 60;
+      case 'h':
+        return amount * 60 * 60;
+      case 'd':
+        return amount * 24 * 60 * 60;
+      default:
+        return null;
+    }
+  }
+
+  private getSanitizedEnvValue(name: string): string | null {
+    const value = this.configService.get<string>(name);
+    if (!value) {
+      return null;
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    if (
+      (trimmed.startsWith('"') && trimmed.endsWith('"'))
+      || (trimmed.startsWith("'") && trimmed.endsWith("'"))
+    ) {
+      const unquoted = trimmed.slice(1, -1).trim();
+      return unquoted || null;
+    }
+
+    return trimmed;
   }
 }

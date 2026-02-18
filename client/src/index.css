@@ -250,6 +250,24 @@ a:hover {
   color: var(--button-secondary-text);
 }
 
+.minw0 {
+  min-width: 0;
+}
+
+.break {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
 .home-sections {
   margin-top: 1rem;
   display: grid;
@@ -393,17 +411,41 @@ a:hover {
 .dashboard-main {
   margin-top: 1rem;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 1rem;
+  width: 100%;
+  max-width: 100%;
+}
+
+.dashboard-main > * {
+  min-width: 0;
 }
 
 .app-content .dashboard-panel {
   margin-top: 0;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.dashboard-files-panel,
+.dashboard-uploaded-list {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.dashboard-uploaded-list {
+  overflow-x: clip;
 }
 
 .dashboard-pending-item,
 .dashboard-uploaded-item {
   display: grid;
   gap: 0.65rem;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .dashboard-pending-item p,
@@ -415,26 +457,106 @@ a:hover {
 .dashboard-uploaded-meta {
   display: grid;
   gap: 0.3rem;
+  min-width: 0;
+}
+
+.dashboard-uploaded-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.65rem;
+  min-width: 0;
+}
+
+.dashboard-file-name {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.dashboard-status-badge {
+  flex-shrink: 0;
+  border: 1px solid var(--card-border);
+  border-radius: 999px;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.75rem;
+  line-height: 1.2;
+  text-transform: capitalize;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--card) 85%, var(--bg-soft) 15%);
+}
+
+.dashboard-uploaded-meta-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.65rem;
+  min-width: 0;
+}
+
+.dashboard-meta-item {
+  min-width: 0;
+  display: grid;
+  gap: 0.2rem;
+}
+
+.dashboard-meta-item dt {
+  margin: 0;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.dashboard-meta-item dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .dashboard-uploaded-controls {
   margin-top: 0;
-  display: grid;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
   gap: 0.7rem;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.dashboard-uploaded-controls > * {
+  min-width: 0;
 }
 
 .dashboard-type-field {
+  flex: 1 1 220px;
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.dashboard-type-field .input {
+  min-width: 0;
 }
 
 .dashboard-file-actions {
   margin-top: 0;
-  display: grid;
+  display: flex;
+  flex: 1 1 230px;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
   gap: 0.6rem;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .dashboard-actions .button,
 .dashboard-file-actions .button {
+  flex: 1 1 10rem;
   width: 100%;
   min-height: 2.5rem;
 }
@@ -445,41 +567,54 @@ a:hover {
   }
 
   .dashboard-file-actions {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (min-width: 1024px) {
-  .dashboard-main {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: 1.2rem;
-    align-items: start;
-  }
-
-  .dashboard-uploaded-item {
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 1rem;
-    align-items: start;
-  }
-
-  .dashboard-uploaded-controls {
-    grid-template-columns: minmax(0, 220px) auto;
-    gap: 0.8rem;
-    align-items: end;
-  }
-
-  .dashboard-type-field {
-    min-width: 220px;
-  }
-
-  .dashboard-file-actions {
-    display: flex;
-    flex-wrap: wrap;
     justify-content: flex-end;
+  }
+
+  .dashboard-uploaded-meta-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .dashboard-file-actions .button {
     width: auto;
+  }
+}
+
+@media (max-width: 639px) {
+  .dashboard-uploaded-controls {
+    align-items: stretch;
+  }
+
+  .dashboard-type-field,
+  .dashboard-file-actions {
+    flex: 1 1 100%;
+  }
+
+  .dashboard-file-actions .button {
+    flex: 1 1 100%;
+    width: 100%;
+  }
+}
+
+@media (min-width: 768px) {
+  .dashboard-main {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 1.5rem;
+    align-items: start;
+  }
+}
+
+@media (max-width: 767px) {
+  .dashboard-main {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (min-width: 1024px) {
+  .dashboard-type-field {
+    min-width: 220px;
+  }
+
+  .dashboard-file-actions .button {
     min-width: 7rem;
   }
 }

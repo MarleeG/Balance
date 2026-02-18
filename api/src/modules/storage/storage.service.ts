@@ -1,5 +1,5 @@
 import { DeleteObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
-import { Injectable, InternalServerErrorException } from '@nestjs/common';
+import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 export interface UploadObjectParams {
@@ -27,20 +27,30 @@ function normalizeEnv(value: string | undefined): string | undefined {
 
 @Injectable()
 export class StorageService {
+  private readonly logger = new Logger(StorageService.name);
   private readonly s3Client: S3Client;
 
   constructor(private readonly configService: ConfigService) {
     const region = this.getRequiredEnv('AWS_REGION');
     const accessKeyId = this.getRequiredEnv('AWS_ACCESS_KEY_ID');
     const secretAccessKey = this.getRequiredEnv('AWS_SECRET_ACCESS_KEY');
+    const endpoint = this.getOptionalEnv('AWS_S3_ENDPOINT') ?? this.getOptionalEnv('S3_ENDPOINT');
+    const forcePathStyle = this.getOptionalEnv('AWS_S3_FORCE_PATH_STYLE') === 'true';
 
     this.s3Client = new S3Client({
       region,
+      endpoint,
+      forcePathStyle,
+      followRegionRedirects: true,
       credentials: {
         accessKeyId,
         secretAccessKey,
       },
     });
+
+    if (endpoint) {
+      this.logger.log(`Using custom S3 endpoint: ${endpoint}`);
+    }
   }
 
   async uploadObject({ bucket, key, body, contentType }: UploadObjectParams): Promise<void> {
@@ -66,5 +76,9 @@ export class StorageService {
     }
 
     return value;
+  }
+
+  private getOptionalEnv(name: string): string | undefined {
+    return normalizeEnv(this.configService.get<string>(name));
   }
 }

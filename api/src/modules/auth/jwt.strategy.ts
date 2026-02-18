@@ -16,7 +16,7 @@ export class JwtStrategy {
         throw new UnauthorizedException(INVALID_ACCESS_TOKEN_MESSAGE);
       }
 
-      if (payload.type === 'continue_session' && !payload.sessionId) {
+      if ((payload.type === 'continue_session' || payload.type === 'session_bootstrap') && !payload.sessionId) {
         throw new UnauthorizedException(INVALID_ACCESS_TOKEN_MESSAGE);
       }
 
@@ -27,6 +27,6 @@ export class JwtStrategy {
   }
 
   private isValidType(value: string): value is AccessTokenPayload['type'] {
-    return value === 'continue_session' || value === 'find_sessions';
+    return value === 'continue_session' || value === 'find_sessions' || value === 'session_bootstrap';
   }
 }

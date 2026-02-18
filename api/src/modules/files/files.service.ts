@@ -3,6 +3,7 @@ import {
   ForbiddenException,
   Injectable,
   InternalServerErrorException,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -37,6 +38,22 @@ const STATEMENT_KEYWORDS: Record<Exclude<StatementType, StatementType.Unknown>, 
     'interest earned',
   ],
 };
+
+function normalizeEnv(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const isDoubleQuoted = trimmed.startsWith('"') && trimmed.endsWith('"');
+  const isSingleQuoted = trimmed.startsWith('\'') && trimmed.endsWith('\'');
+
+  if (isDoubleQuoted || isSingleQuoted) {
+    return trimmed.slice(1, -1).trim();
+  }
+
+  return trimmed;
+}
 
 export interface MultipartFile {
   originalname: string;
@@ -104,6 +121,8 @@ interface DetectionResult {
 
 @Injectable()
 export class FilesService {
+  private readonly logger = new Logger(FilesService.name);
+
   constructor(
     @InjectModel(FileRecord.name)
     private readonly filesModel: Model<FileDocument>,
@@ -221,15 +240,21 @@ export class FilesService {
             reason: 'No typical bank statement keywords were detected. Uploaded for manual review.',
           });
         }
-      } catch {
+      } catch (error) {
         await this.filesModel.updateOne(
           { _id: fileId },
           { $set: { status: FileStatus.Rejected } },
         ).exec();
 
+        const reason = this.getUploadFailureReason(error);
+        this.logger.error(
+          `Failed to upload file "${originalName}" for session ${sessionId}: ${reason}`,
+          error instanceof Error ? error.stack : String(error),
+        );
+
         rejected.push({
           originalName,
-          reason: FILE_UPLOAD_FAILED_MESSAGE,
+          reason,
         });
       }
     }
@@ -371,7 +396,7 @@ export class FilesService {
   }
 
   private getRequiredEnv(name: string): string {
-    const value = this.configService.get<string>(name)?.trim();
+    const value = normalizeEnv(this.configService.get<string>(name));
     if (!value) {
       throw new InternalServerErrorException(`${name} must be configured.`);
     }
@@ -399,6 +424,48 @@ export class FilesService {
 
   private getMaxFileSizeBytes(): number {
     return this.getMaxFileSizeMb() * 1024 * 1024;
+  }
+
+  private getUploadFailureReason(error: unknown): string {
+    const err = error as { name?: string; message?: string; code?: string };
+    const name = (err?.name ?? '').toString();
+    const code = (err?.code ?? '').toString();
+    const message = (err?.message ?? '').toString();
+    const combined = `${name} ${code} ${message}`.toLowerCase();
+
+    if (combined.includes('nosuchbucket')) {
+      return 'S3 bucket was not found. Verify S3_BUCKET_NAME.';
+    }
+
+    if (
+      combined.includes('accessdenied')
+      || combined.includes('invalidaccesskeyid')
+      || combined.includes('signaturedoesnotmatch')
+      || combined.includes('not authorized')
+      || combined.includes('forbidden')
+    ) {
+      return 'S3 credentials are invalid or missing PutObject permission.';
+    }
+
+    if (
+      combined.includes('authorizationheadermalformed')
+      || combined.includes('permanentredirect')
+      || combined.includes('wrong region')
+    ) {
+      return 'S3 region does not match the bucket region.';
+    }
+
+    if (
+      combined.includes('timeout')
+      || combined.includes('econnrefused')
+      || combined.includes('enotfound')
+      || combined.includes('network')
+      || combined.includes('socket')
+    ) {
+      return 'Unable to reach S3 from the API runtime.';
+    }
+
+    return FILE_UPLOAD_FAILED_MESSAGE;
   }
 
   private async detectStatementTypeFromPdf(pdfBuffer: Buffer): Promise<DetectionResult> {
