@@ -94,7 +94,7 @@ export class AuthService {
         userAgent: context.userAgent,
       });
 
-      await this.emailService.sendMagicLink(dto.email, rawToken);
+      this.dispatchMagicLinkSend(dto.email, rawToken, 'Failed to issue continue-session magic link.');
     } catch (error) {
       this.logger.error(
         'Failed to issue continue-session magic link.',
@@ -136,7 +136,7 @@ export class AuthService {
         userAgent: context.userAgent,
       });
 
-      await this.emailService.sendMagicLink(normalizedEmail, rawToken);
+      this.dispatchMagicLinkSend(normalizedEmail, rawToken, 'Failed to issue find-sessions magic link.');
     } catch (error) {
       this.logger.error(
         'Failed to issue find-sessions magic link.',
@@ -225,6 +225,16 @@ export class AuthService {
     }
 
     throw new Error('Unable to generate a unique magic token hash.');
+  }
+
+  private dispatchMagicLinkSend(email: string, rawToken: string, failureMessage: string): void {
+    const sendPromise = this.emailService.sendMagicLink(email, rawToken);
+    void Promise.resolve(sendPromise).catch((error) => {
+      this.logger.error(
+        failureMessage,
+        error instanceof Error ? error.stack : String(error),
+      );
+    });
   }
 
   private async getSessionsForToken(tokenDoc: EmailTokenDocument): Promise<SessionSummary[]> {
