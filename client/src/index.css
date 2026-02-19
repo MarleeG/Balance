@@ -504,6 +504,69 @@ a:hover {
   min-width: 0;
 }
 
+.dashboard-manage-panel {
+  margin-top: 1rem;
+}
+
+.dashboard-manage-header {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.dashboard-manage-count {
+  margin-top: 0;
+  font-size: 0.92rem;
+}
+
+.dashboard-manage-toggle {
+  margin-top: 0.8rem;
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-start;
+}
+
+.dashboard-manage-toggle input[type='checkbox'] {
+  margin-top: 0.2rem;
+  width: 1rem;
+  height: 1rem;
+  accent-color: var(--link);
+}
+
+.dashboard-manage-toggle span {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.dashboard-manage-toggle small {
+  display: block;
+}
+
+.dashboard-folder-counts {
+  margin-top: 0.9rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.dashboard-folder-pill {
+  border: 1px solid var(--card-border);
+  border-radius: 999px;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--card) 85%, var(--bg-soft) 15%);
+}
+
+.dashboard-manage-actions {
+  margin-top: 1rem;
+  display: grid;
+  gap: 0.65rem;
+}
+
+.dashboard-manage-actions .button {
+  width: 100%;
+}
+
 .app-content .dashboard-panel {
   margin-top: 0;
   width: 100%;
@@ -520,6 +583,27 @@ a:hover {
 
 .dashboard-uploaded-list {
   overflow-x: clip;
+}
+
+.dashboard-folder-section {
+  margin-top: 0;
+}
+
+.dashboard-folder-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.dashboard-file-move-controls {
+  margin-top: 0.75rem;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.dashboard-file-move-controls .button {
+  width: 100%;
 }
 
 .dashboard-pending-item,
@@ -553,6 +637,9 @@ a:hover {
 
 .dashboard-file-name {
   margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
   min-width: 0;
   overflow-wrap: anywhere;
   word-break: break-word;
@@ -645,7 +732,31 @@ a:hover {
 }
 
 @media (min-width: 640px) {
+  .dashboard-manage-header {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    column-gap: 1rem;
+  }
+
+  .dashboard-manage-actions {
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  .dashboard-manage-actions .button {
+    width: auto;
+  }
+
   .dashboard-actions .button {
+    width: auto;
+  }
+
+  .dashboard-file-move-controls {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+  }
+
+  .dashboard-file-move-controls .button {
     width: auto;
   }
 

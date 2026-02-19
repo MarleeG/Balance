@@ -1,8 +1,15 @@
-import { Body, Controller, Delete, Get, Param, Post, Req, UnauthorizedException, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UnauthorizedException, UseGuards } from '@nestjs/common';
 import type { AccessTokenPayload } from '../auth/auth.service';
 import { AuthenticatedRequest, JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CreateSessionDto } from './dto/create-session.dto';
-import { CreateSessionResponse, DeleteSessionResponse, SessionSummary, SessionsService } from './sessions.service';
+import { UpdateSessionSettingsDto } from './dto/update-session-settings.dto';
+import {
+  CreateSessionResponse,
+  DeleteSessionResponse,
+  SessionSettingsResponse,
+  SessionSummary,
+  SessionsService,
+} from './sessions.service';
 
 @Controller('sessions')
 export class SessionsController {
@@ -36,6 +43,20 @@ export class SessionsController {
   @Delete(':sessionId')
   deleteSession(@Param('sessionId') sessionId: string, @Req() req: AuthenticatedRequest): Promise<DeleteSessionResponse> {
     return this.sessionsService.deleteActiveSessionById(sessionId, this.getAuthenticatedUser(req));
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Patch(':sessionId/settings')
+  updateSessionSettings(
+    @Param('sessionId') sessionId: string,
+    @Body() dto: UpdateSessionSettingsDto,
+    @Req() req: AuthenticatedRequest,
+  ): Promise<SessionSettingsResponse> {
+    return this.sessionsService.updateSessionSettings(
+      sessionId,
+      this.getAuthenticatedUser(req),
+      { autoCategorizeOnUpload: dto.autoCategorizeOnUpload },
+    );
   }
 
   private getAuthenticatedUser(req: AuthenticatedRequest): AccessTokenPayload {
