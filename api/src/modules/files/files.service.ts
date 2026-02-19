@@ -9,7 +9,13 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { isValidObjectId, Model } from 'mongoose';
-import { FileDocument, FileRecord, FileStatus, StatementType } from '../../db/schemas/file.schema';
+import {
+  FileCategory,
+  FileDocument,
+  FileRecord,
+  FileStatus,
+  StatementType,
+} from '../../db/schemas/file.schema';
 import { Session, SessionDocument, SessionStatus } from '../../db/schemas/session.schema';
 import type { AccessTokenPayload } from '../auth/auth.service';
 import { StorageService } from '../storage/storage.service';
@@ -21,6 +27,8 @@ const FILE_UPLOAD_FAILED_MESSAGE = 'Failed to upload file to storage.';
 const SESSION_NOT_FOUND_MESSAGE = 'Session not found.';
 const FILE_NOT_FOUND_MESSAGE = 'File not found.';
 const SESSION_ACCESS_FORBIDDEN_MESSAGE = 'Access to this session is not allowed.';
+const DUPLICATE_FILE_NAME_REASON = 'A file with this name already exists in this session.';
+const FILES_MOVE_EMPTY_MESSAGE = 'At least one file id is required for move.';
 const STATEMENT_KEYWORDS: Record<Exclude<StatementType, StatementType.Unknown>, string[]> = {
   [StatementType.Credit]: [
     'credit card',
@@ -37,6 +45,17 @@ const STATEMENT_KEYWORDS: Record<Exclude<StatementType, StatementType.Unknown>, 
     'savings account',
     'interest earned',
   ],
+};
+const STATEMENT_TYPE_PRIORITY: Record<Exclude<StatementType, StatementType.Unknown>, number> = {
+  [StatementType.Credit]: 3,
+  [StatementType.Checking]: 2,
+  [StatementType.Savings]: 1,
+};
+const CATEGORY_FROM_STATEMENT: Record<StatementType, FileCategory> = {
+  [StatementType.Credit]: FileCategory.Credit,
+  [StatementType.Checking]: FileCategory.Checking,
+  [StatementType.Savings]: FileCategory.Savings,
+  [StatementType.Unknown]: FileCategory.Unknown,
 };
 
 function normalizeEnv(value: string | undefined): string | undefined {
@@ -66,6 +85,7 @@ export interface UploadedFileItem {
   id: string;
   originalName: string;
   statementType: StatementType;
+  category: FileCategory;
   autoDetectedType: StatementType;
   detectionConfidence: number;
   isLikelyStatement: boolean;
@@ -89,6 +109,17 @@ export interface UploadFilesResponse {
   warnings: UploadWarningItem[];
 }
 
+export interface DetectFilePreviewItem {
+  originalName: string;
+  autoDetectedType: StatementType;
+  detectionConfidence: number;
+  isLikelyStatement: boolean;
+}
+
+export interface DetectFilesResponse {
+  files: DetectFilePreviewItem[];
+}
+
 export interface SessionFileSummary {
   id: string;
   sessionId: string;
@@ -96,6 +127,7 @@ export interface SessionFileSummary {
   mimeType: string;
   size: number;
   statementType: StatementType;
+  category: FileCategory;
   status: FileStatus;
   s3Bucket: string;
   s3Key: string;
@@ -111,6 +143,17 @@ export interface UpdateFileResponse {
 export interface DeleteFileResponse {
   deleted: boolean;
   fileId: string;
+}
+
+export interface MoveFilesToCategoryResponse {
+  movedCount: number;
+  category: FileCategory;
+}
+
+export interface RawFileResponse {
+  fileName: string;
+  mimeType: string;
+  body: Buffer;
 }
 
 interface DetectionResult {
@@ -143,12 +186,14 @@ export class FilesService {
       throw new BadRequestException('At least one file must be provided.');
     }
 
-    await this.assertSessionAccess(sessionId, user, true);
+    const session = await this.assertSessionAccess(sessionId, user, true);
 
     const maxFiles = this.getMaxFilesPerUpload();
     const maxFileSizeBytes = this.getMaxFileSizeBytes();
     const bucket = this.getRequiredEnv('S3_BUCKET_NAME');
     const metaMap = statementTypeByName ?? new Map<string, StatementType>();
+    const statementTypeByFileNameKey = this.buildStatementTypeByFileNameKey(metaMap);
+    const fileNameKeysInSession = await this.getExistingFileNameKeys(sessionId);
 
     const uploaded: UploadedFileItem[] = [];
     const rejected: RejectedFileItem[] = [];
@@ -164,7 +209,16 @@ export class FilesService {
     }
 
     for (const file of acceptedBatch) {
-      const originalName = file.originalname ?? 'statement.pdf';
+      const originalName = this.normalizeOriginalFileName(file.originalname);
+      const fileNameKey = this.getFileNameKey(originalName);
+
+      if (fileNameKeysInSession.has(fileNameKey)) {
+        rejected.push({
+          originalName,
+          reason: DUPLICATE_FILE_NAME_REASON,
+        });
+        continue;
+      }
 
       if (file.mimetype !== ALLOWED_MIME_TYPE) {
         rejected.push({
@@ -190,15 +244,21 @@ export class FilesService {
         continue;
       }
 
-      const statementType = metaMap.get(originalName) ?? StatementType.Unknown;
       // V1 requirement: run detection inline during the upload request (no queue/background worker).
       const detection = await this.detectStatementTypeFromPdf(file.buffer);
+      const requestedStatementType = statementTypeByFileNameKey.get(fileNameKey) ?? StatementType.Unknown;
+      const statementType = requestedStatementType === StatementType.Unknown
+        ? detection.autoDetectedType
+        : requestedStatementType;
+      const category = this.resolveUploadCategory(statementType, session);
+      fileNameKeysInSession.add(fileNameKey);
       const fileRecord = new this.filesModel({
         sessionId,
         originalName,
         mimeType: file.mimetype,
         size: file.size,
         statementType,
+        category,
         autoDetectedType: detection.autoDetectedType,
         detectionConfidence: detection.detectionConfidence,
         isLikelyStatement: detection.isLikelyStatement,
@@ -208,7 +268,7 @@ export class FilesService {
       });
 
       const fileId = fileRecord._id.toString();
-      fileRecord.s3Key = this.buildS3Key(sessionId, statementType, fileId, originalName);
+      fileRecord.s3Key = this.buildS3Key(sessionId, category, fileId, originalName);
       await fileRecord.save();
 
       try {
@@ -227,6 +287,7 @@ export class FilesService {
           id: fileId,
           originalName: fileRecord.originalName,
           statementType: fileRecord.statementType,
+          category: this.normalizeFileCategory(fileRecord.category),
           autoDetectedType: fileRecord.autoDetectedType,
           detectionConfidence: fileRecord.detectionConfidence,
           isLikelyStatement: fileRecord.isLikelyStatement,
@@ -262,6 +323,38 @@ export class FilesService {
     return { uploaded, rejected, warnings };
   }
 
+  async detectFilesForSession(
+    sessionId: string,
+    user: AccessTokenPayload,
+    files: MultipartFile[],
+  ): Promise<DetectFilesResponse> {
+    await this.assertSessionAccess(sessionId, user, true);
+
+    const previews: DetectFilePreviewItem[] = [];
+    for (const file of files ?? []) {
+      const originalName = this.normalizeOriginalFileName(file.originalname);
+      if (file.mimetype !== ALLOWED_MIME_TYPE || !file.buffer) {
+        previews.push({
+          originalName,
+          autoDetectedType: StatementType.Unknown,
+          detectionConfidence: 0,
+          isLikelyStatement: false,
+        });
+        continue;
+      }
+
+      const detection = await this.detectStatementTypeFromPdf(file.buffer);
+      previews.push({
+        originalName,
+        autoDetectedType: detection.autoDetectedType,
+        detectionConfidence: detection.detectionConfidence,
+        isLikelyStatement: detection.isLikelyStatement,
+      });
+    }
+
+    return { files: previews };
+  }
+
   async listSessionFiles(sessionId: string, user: AccessTokenPayload): Promise<SessionFileSummary[]> {
     await this.assertSessionAccess(sessionId, user, false);
 
@@ -277,6 +370,7 @@ export class FilesService {
       mimeType: file.mimeType,
       size: file.size,
       statementType: file.statementType,
+      category: this.normalizeFileCategory(file.category),
       status: file.status,
       s3Bucket: file.s3Bucket,
       s3Key: file.s3Key,
@@ -293,6 +387,9 @@ export class FilesService {
     await this.assertSessionAccess(file.sessionId, user, false);
 
     file.statementType = statementType;
+    if (this.normalizeFileCategory(file.category) !== FileCategory.Unfiled) {
+      file.category = CATEGORY_FROM_STATEMENT[statementType];
+    }
     file.confirmedByUser = true;
     await file.save();
 
@@ -316,6 +413,66 @@ export class FilesService {
     return {
       deleted: true,
       fileId: file._id.toString(),
+    };
+  }
+
+  async moveFilesToCategory(
+    sessionId: string,
+    fileIds: string[],
+    category: FileCategory,
+    user: AccessTokenPayload,
+  ): Promise<MoveFilesToCategoryResponse> {
+    if (!Array.isArray(fileIds) || fileIds.length === 0) {
+      throw new BadRequestException(FILES_MOVE_EMPTY_MESSAGE);
+    }
+
+    await this.assertSessionAccess(sessionId, user, false);
+    const targetStatementType = this.getStatementTypeForMoveCategory(category);
+
+    const validIds = [...new Set(fileIds.filter((id) => isValidObjectId(id)))];
+    if (validIds.length === 0) {
+      throw new BadRequestException(FILES_MOVE_EMPTY_MESSAGE);
+    }
+
+    const updateSet: {
+      category: FileCategory;
+      confirmedByUser: boolean;
+      statementType?: StatementType;
+    } = {
+      category,
+      confirmedByUser: true,
+    };
+
+    if (targetStatementType) {
+      updateSet.statementType = targetStatementType;
+    }
+
+    const result = await this.filesModel.updateMany(
+      {
+        _id: { $in: validIds },
+        sessionId,
+        status: { $ne: FileStatus.Deleted },
+      },
+      {
+        $set: updateSet,
+      },
+    ).exec();
+
+    return {
+      movedCount: result.modifiedCount ?? 0,
+      category,
+    };
+  }
+
+  async getRawFile(fileId: string, user: AccessTokenPayload): Promise<RawFileResponse> {
+    const file = await this.getAccessibleFile(fileId);
+    await this.assertSessionAccess(file.sessionId, user, false);
+
+    const object = await this.storageService.getObject(file.s3Bucket, file.s3Key);
+    return {
+      fileName: file.originalName,
+      mimeType: file.mimeType,
+      body: object.body,
     };
   }
 
@@ -375,12 +532,13 @@ export class FilesService {
 
   private buildS3Key(
     sessionId: string,
-    statementType: StatementType,
+    category: FileCategory,
     fileId: string,
     originalName: string,
   ): string {
     const safeName = this.sanitizeFileName(originalName);
-    return `sessions/${sessionId}/${statementType}/${fileId}-${safeName}.pdf`;
+    const folder = category === FileCategory.Unfiled ? 'root' : category;
+    return `sessions/${sessionId}/${folder}/${fileId}-${safeName}.pdf`;
   }
 
   private sanitizeFileName(originalName: string): string {
@@ -393,6 +551,91 @@ export class FilesService {
       .slice(0, 80);
 
     return sanitized || 'statement';
+  }
+
+  private normalizeOriginalFileName(originalName: string | undefined): string {
+    const normalized = originalName?.trim();
+    return normalized || 'statement.pdf';
+  }
+
+  private getFileNameKey(fileName: string): string {
+    return fileName.trim().toLowerCase();
+  }
+
+  private resolveUploadCategory(statementType: StatementType, session: SessionDocument): FileCategory {
+    const autoCategorizeOnUpload = session.autoCategorizeOnUpload !== false;
+    if (!autoCategorizeOnUpload) {
+      return FileCategory.Unfiled;
+    }
+
+    return CATEGORY_FROM_STATEMENT[statementType];
+  }
+
+  private normalizeFileCategory(category: FileCategory | undefined): FileCategory {
+    if (!category) {
+      return FileCategory.Unfiled;
+    }
+
+    if (
+      category === FileCategory.Credit
+      || category === FileCategory.Checking
+      || category === FileCategory.Savings
+      || category === FileCategory.Unknown
+      || category === FileCategory.Unfiled
+    ) {
+      return category;
+    }
+
+    return FileCategory.Unfiled;
+  }
+
+  private getStatementTypeForMoveCategory(category: FileCategory): StatementType | null {
+    switch (category) {
+      case FileCategory.Credit:
+        return StatementType.Credit;
+      case FileCategory.Checking:
+        return StatementType.Checking;
+      case FileCategory.Savings:
+        return StatementType.Savings;
+      case FileCategory.Unknown:
+        return StatementType.Unknown;
+      case FileCategory.Unfiled:
+        return null;
+      default:
+        return null;
+    }
+  }
+
+  private buildStatementTypeByFileNameKey(
+    statementTypeByName: Map<string, StatementType>,
+  ): Map<string, StatementType> {
+    const byFileNameKey = new Map<string, StatementType>();
+    for (const [fileName, statementType] of statementTypeByName.entries()) {
+      byFileNameKey.set(this.getFileNameKey(fileName), statementType);
+    }
+
+    return byFileNameKey;
+  }
+
+  private async getExistingFileNameKeys(sessionId: string): Promise<Set<string>> {
+    const existingFiles = await this.filesModel.find({
+      sessionId,
+      status: { $ne: FileStatus.Deleted },
+    })
+      .select({ originalName: 1, _id: 0 })
+      .lean<Array<{ originalName?: string }>>()
+      .exec();
+
+    const fileNameKeys = new Set<string>();
+    for (const file of existingFiles) {
+      if (!file?.originalName) {
+        continue;
+      }
+
+      fileNameKeys.add(this.getFileNameKey(file.originalName));
+    }
+
+    return fileNameKeys;
   }
 
   private getRequiredEnv(name: string): string {
@@ -496,18 +739,24 @@ export class FilesService {
     }
 
     const entries = Object.entries(STATEMENT_KEYWORDS).map(([type, keywords]) => {
-      const score = keywords.reduce((acc, keyword) => (text.includes(keyword) ? acc + 1 : acc), 0);
+      const uniqueKeywordMatches = keywords.reduce(
+        (acc, keyword) => (text.includes(keyword) ? acc + 1 : acc),
+        0,
+      );
+      const mentionScore = keywords.reduce(
+        (acc, keyword) => acc + this.countKeywordOccurrences(text, keyword),
+        0,
+      );
       return {
         type: type as Exclude<StatementType, StatementType.Unknown>,
-        score,
+        uniqueKeywordMatches,
+        mentionScore,
         totalKeywords: keywords.length,
       };
     });
 
-    const highestScore = Math.max(...entries.map((entry) => entry.score));
-    const totalScore = entries.reduce((acc, entry) => acc + entry.score, 0);
-
-    if (highestScore <= 0) {
+    const candidates = entries.filter((entry) => entry.uniqueKeywordMatches > 0 || entry.mentionScore > 0);
+    if (candidates.length === 0) {
       return {
         autoDetectedType: StatementType.Unknown,
         detectionConfidence: 0,
@@ -515,22 +764,48 @@ export class FilesService {
       };
     }
 
-    const winners = entries.filter((entry) => entry.score === highestScore);
-    if (winners.length !== 1) {
-      const confidence = totalScore > 0 ? highestScore / totalScore : 0;
-      return {
-        autoDetectedType: StatementType.Unknown,
-        detectionConfidence: Number(confidence.toFixed(2)),
-        isLikelyStatement: true,
-      };
-    }
+    candidates.sort((a, b) => {
+      if (b.uniqueKeywordMatches !== a.uniqueKeywordMatches) {
+        return b.uniqueKeywordMatches - a.uniqueKeywordMatches;
+      }
+      if (b.mentionScore !== a.mentionScore) {
+        return b.mentionScore - a.mentionScore;
+      }
 
-    const winner = winners[0];
-    const confidence = winner.totalKeywords > 0 ? winner.score / winner.totalKeywords : 0;
+      const aCoverage = a.totalKeywords > 0 ? a.uniqueKeywordMatches / a.totalKeywords : 0;
+      const bCoverage = b.totalKeywords > 0 ? b.uniqueKeywordMatches / b.totalKeywords : 0;
+      if (bCoverage !== aCoverage) {
+        return bCoverage - aCoverage;
+      }
+
+      return STATEMENT_TYPE_PRIORITY[b.type] - STATEMENT_TYPE_PRIORITY[a.type];
+    });
+
+    const winner = candidates[0];
+    const confidence = winner.totalKeywords > 0
+      ? winner.uniqueKeywordMatches / winner.totalKeywords
+      : 0;
     return {
       autoDetectedType: winner.type,
       detectionConfidence: Number(confidence.toFixed(2)),
       isLikelyStatement: true,
     };
+  }
+
+  private countKeywordOccurrences(text: string, keyword: string): number {
+    let fromIndex = 0;
+    let count = 0;
+
+    while (fromIndex < text.length) {
+      const index = text.indexOf(keyword, fromIndex);
+      if (index === -1) {
+        break;
+      }
+
+      count += 1;
+      fromIndex = index + keyword.length;
+    }
+
+    return count;
   }
 }

@@ -35,6 +35,11 @@ export class Session {
   status: SessionStatus;
 
   @Prop({
+    default: true,
+  })
+  autoCategorizeOnUpload: boolean;
+
+  @Prop({
     required: true,
     default: () => new Date(Date.now() + ONE_WEEK_MS),
   })

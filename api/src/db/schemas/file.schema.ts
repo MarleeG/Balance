@@ -17,6 +17,14 @@ export enum FileStatus {
   Rejected = 'rejected',
 }
 
+export enum FileCategory {
+  Credit = 'credit',
+  Checking = 'checking',
+  Savings = 'savings',
+  Unknown = 'unknown',
+  Unfiled = 'unfiled',
+}
+
 @Schema({ collection: 'files', timestamps: true })
 export class FileRecord {
   @Prop({ required: true, trim: true })
@@ -36,6 +44,12 @@ export class FileRecord {
     default: StatementType.Unknown,
   })
   statementType: StatementType;
+
+  @Prop({
+    enum: FileCategory,
+    default: FileCategory.Unfiled,
+  })
+  category: FileCategory;
 
   @Prop({
     enum: StatementType,
@@ -82,3 +96,4 @@ export class FileRecord {
 export const FileSchema = SchemaFactory.createForClass(FileRecord);
 FileSchema.index({ sessionId: 1 });
 FileSchema.index({ sessionId: 1, uploadedAt: -1 });
+FileSchema.index({ sessionId: 1, category: 1, uploadedAt: -1 });

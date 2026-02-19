@@ -13,16 +13,23 @@ import {
   UseInterceptors,
   UsePipes,
   ValidationPipe,
+  Res,
+  StreamableFile,
 } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
+import { Response } from 'express';
 import { StatementType } from '../../db/schemas/file.schema';
 import type { AccessTokenPayload } from '../auth/auth.service';
 import { AuthenticatedRequest, JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { MoveFilesToCategoryDto } from './dto/move-files.dto';
 import { UpdateFileDto } from './dto/update-file.dto';
 import {
+  DetectFilesResponse,
   DeleteFileResponse,
   FilesService,
+  MoveFilesToCategoryResponse,
   MultipartFile,
+  RawFileResponse,
   SessionFileSummary,
   UpdateFileResponse,
   UploadFilesResponse,
@@ -46,6 +53,17 @@ export class FilesController {
   }
 
   @UseGuards(JwtAuthGuard)
+  @Post('sessions/:sessionId/files/detect')
+  @UseInterceptors(FilesInterceptor('files'))
+  detectFiles(
+    @Param('sessionId') sessionId: string,
+    @UploadedFiles() files: MultipartFile[],
+    @Req() req: AuthenticatedRequest,
+  ): Promise<DetectFilesResponse> {
+    return this.filesService.detectFilesForSession(sessionId, this.getAuthenticatedUser(req), files);
+  }
+
+  @UseGuards(JwtAuthGuard)
   @Get('sessions/:sessionId/files')
   listSessionFiles(@Param('sessionId') sessionId: string, @Req() req: AuthenticatedRequest): Promise<SessionFileSummary[]> {
     return this.filesService.listSessionFiles(sessionId, this.getAuthenticatedUser(req));
@@ -63,9 +81,44 @@ export class FilesController {
   }
 
   @UseGuards(JwtAuthGuard)
+  @Patch('sessions/:sessionId/files/category')
+  @UsePipes(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+  moveFilesToCategory(
+    @Param('sessionId') sessionId: string,
+    @Body() dto: MoveFilesToCategoryDto,
+    @Req() req: AuthenticatedRequest,
+  ): Promise<MoveFilesToCategoryResponse> {
+    return this.filesService.moveFilesToCategory(
+      sessionId,
+      dto.fileIds,
+      dto.category,
+      this.getAuthenticatedUser(req),
+    );
+  }
+
+  @UseGuards(JwtAuthGuard)
   @Delete('files/:fileId')
   deleteFile(@Param('fileId') fileId: string, @Req() req: AuthenticatedRequest): Promise<DeleteFileResponse> {
     return this.filesService.deleteFile(fileId, this.getAuthenticatedUser(req));
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('files/:fileId/raw')
+  async getRawFile(
+    @Param('fileId') fileId: string,
+    @Req() req: AuthenticatedRequest,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<StreamableFile> {
+    const rawFile = await this.filesService.getRawFile(fileId, this.getAuthenticatedUser(req));
+    this.applyRawFileHeaders(res, rawFile);
+    return new StreamableFile(rawFile.body);
+  }
+
+  private applyRawFileHeaders(res: Response, rawFile: RawFileResponse): void {
+    const sanitizedFileName = rawFile.fileName.replace(/["\r\n]/g, '');
+    res.setHeader('Content-Type', rawFile.mimeType || 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${sanitizedFileName}"`);
+    res.setHeader('Cache-Control', 'private, max-age=60');
   }
 
   private getAuthenticatedUser(req: AuthenticatedRequest): AccessTokenPayload {

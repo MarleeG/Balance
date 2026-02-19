@@ -1,11 +1,17 @@
-import { DeleteObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Readable } from 'node:stream';
 
 export interface UploadObjectParams {
   bucket: string;
   key: string;
   body: Buffer | Uint8Array | string;
+  contentType?: string;
+}
+
+export interface GetObjectResult {
+  body: Buffer;
   contentType?: string;
 }
 
@@ -48,6 +54,22 @@ export class StorageService {
     }));
   }
 
+  async getObject(bucket: string, key: string): Promise<GetObjectResult> {
+    const response = await this.getS3Client().send(new GetObjectCommand({
+      Bucket: bucket,
+      Key: key,
+    }));
+
+    if (!response.Body) {
+      throw new InternalServerErrorException('Storage object body is missing.');
+    }
+
+    return {
+      body: await this.readBody(response.Body),
+      contentType: response.ContentType ?? undefined,
+    };
+  }
+
   private getS3Client(): S3Client {
     if (this.s3Client) {
       return this.s3Client;
@@ -88,5 +110,42 @@ export class StorageService {
 
   private getOptionalEnv(name: string): string | undefined {
     return normalizeEnv(this.configService.get<string>(name));
+  }
+
+  private async readBody(body: unknown): Promise<Buffer> {
+    const maybeTransformable = body as { transformToByteArray?: () => Promise<Uint8Array> };
+    if (typeof maybeTransformable.transformToByteArray === 'function') {
+      return Buffer.from(await maybeTransformable.transformToByteArray());
+    }
+
+    if (Buffer.isBuffer(body)) {
+      return body;
+    }
+
+    if (body instanceof Uint8Array) {
+      return Buffer.from(body);
+    }
+
+    if (body instanceof Readable) {
+      const chunks: Buffer[] = [];
+      for await (const chunk of body) {
+        if (Buffer.isBuffer(chunk)) {
+          chunks.push(chunk);
+          continue;
+        }
+
+        if (typeof chunk === 'string') {
+          chunks.push(Buffer.from(chunk));
+          continue;
+        }
+
+        if (chunk instanceof Uint8Array) {
+          chunks.push(Buffer.from(chunk));
+        }
+      }
+      return Buffer.concat(chunks);
+    }
+
+    throw new InternalServerErrorException('Unsupported storage response body.');
   }
 }

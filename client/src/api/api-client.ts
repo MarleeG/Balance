@@ -151,6 +151,44 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
   return payload as T;
 }
 
+export async function apiRequestBlob(path: string, options: ApiRequestOptions = {}): Promise<Blob> {
+  const method = options.method ?? 'GET';
+  const headers: Record<string, string> = {
+    Accept: '*/*',
+    ...options.headers,
+  };
+
+  const token = options.skipAuth ? null : (options.accessToken ?? getAccessToken());
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  let body: BodyInit | undefined;
+  if (options.body !== undefined) {
+    if (options.body instanceof FormData) {
+      body = options.body;
+    } else {
+      headers['Content-Type'] = 'application/json';
+      body = JSON.stringify(options.body);
+    }
+  }
+
+  const requestUrl = buildUrl(path);
+  const response = await fetch(requestUrl, {
+    ...options,
+    method,
+    headers,
+    body,
+  });
+
+  if (!response.ok) {
+    const payload = await parseResponseBody(response);
+    throw new ApiError(response.status, response.statusText, payload);
+  }
+
+  return response.blob();
+}
+
 export const apiClient = {
   get: <T>(path: string, options?: Omit<ApiRequestOptions, 'method' | 'body'>) =>
     apiRequest<T>(path, { ...options, method: 'GET' }),

@@ -257,7 +257,29 @@ describe('SessionsService', () => {
       expect.objectContaining({
         sessionId: 'SESS3333',
         uploadedFileCount: 2,
+        autoCategorizeOnUpload: true,
       }),
     );
+  });
+
+  it('updates auto-categorize setting for an owned session', async () => {
+    const save = jest.fn().mockResolvedValue(undefined);
+    sessionsModel.findOne.mockReturnValue({
+      exec: jest.fn().mockResolvedValue({
+        sessionId: 'SESS3333',
+        email: 'user@example.com',
+        autoCategorizeOnUpload: true,
+        save,
+      }),
+    });
+
+    const result = await service.updateSessionSettings(
+      'SESS3333',
+      { email: 'user@example.com' },
+      { autoCategorizeOnUpload: false },
+    );
+
+    expect(result).toEqual({ autoCategorizeOnUpload: false });
+    expect(save).toHaveBeenCalled();
   });
 });

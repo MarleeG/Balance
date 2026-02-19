@@ -40,10 +40,15 @@ export interface SessionSummary {
   expiresAt: string;
   status: SessionStatus;
   uploadedFileCount: number;
+  autoCategorizeOnUpload: boolean;
 }
 
 export interface DeleteSessionResponse {
   deleted: boolean;
+}
+
+export interface SessionSettingsResponse {
+  autoCategorizeOnUpload: boolean;
 }
 
 interface ActiveSessionFilter {
@@ -169,6 +174,20 @@ export class SessionsService {
     return session;
   }
 
+  async updateSessionSettings(
+    sessionId: string,
+    user: { email: string; sessionId?: string },
+    settings: SessionSettingsResponse,
+  ): Promise<SessionSettingsResponse> {
+    const session = await this.getOwnedSessionById(sessionId, user);
+    session.autoCategorizeOnUpload = settings.autoCategorizeOnUpload;
+    await session.save();
+
+    return {
+      autoCategorizeOnUpload: session.autoCategorizeOnUpload !== false,
+    };
+  }
+
   async deleteActiveSessionById(
     sessionId: string,
     user: { email: string; sessionId?: string },
@@ -275,7 +294,7 @@ export class SessionsService {
   }
 
   private toSessionSummary(
-    session: Pick<Session, 'sessionId' | 'createdAt' | 'expiresAt' | 'status'>,
+    session: Pick<Session, 'sessionId' | 'createdAt' | 'expiresAt' | 'status' | 'autoCategorizeOnUpload'>,
     uploadedFileCount: number,
   ): SessionSummary {
     const createdAt = 'createdAt' in session && session.createdAt ? new Date(session.createdAt).toISOString() : '';
@@ -286,6 +305,7 @@ export class SessionsService {
       expiresAt: new Date(session.expiresAt).toISOString(),
       status: session.status,
       uploadedFileCount,
+      autoCategorizeOnUpload: session.autoCategorizeOnUpload !== false,
     };
   }
 
