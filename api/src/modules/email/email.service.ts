@@ -7,7 +7,10 @@ const DEFAULT_EMAIL_PROVIDER = 'console';
 const DEFAULT_EMAIL_FROM = 'onboarding@resend.dev';
 const DEFAULT_MAGIC_LINK_TTL_MINUTES = 15;
 const DEFAULT_RESEND_TIMEOUT_MS = 8000;
+const DEFAULT_RESEND_RETRY_COUNT = 2;
+const DEFAULT_RESEND_RETRY_BASE_DELAY_MS = 400;
 const RESEND_SESSIONS_SUBJECT = 'Your Balance sessions';
+const RETRYABLE_RESEND_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
 function normalizeEnv(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
@@ -53,49 +56,74 @@ export class EmailService {
       throw new InternalServerErrorException('RESEND_API_KEY is required when EMAIL_PROVIDER=resend.');
     }
 
-    try {
-      const response = await fetch(RESEND_API_URL, {
-        method: 'POST',
-        signal: AbortSignal.timeout(this.getResendTimeoutMs()),
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          from,
-          to: [email],
-          subject: RESEND_SESSIONS_SUBJECT,
-          html: this.buildMagicLinkHtml(link, ttlMinutes),
-          text: this.buildMagicLinkText(link, ttlMinutes),
-        }),
-      });
+    const timeoutMs = this.getResendTimeoutMs();
+    const maxAttempts = this.getResendRetryCount() + 1;
+    const payload = JSON.stringify({
+      from,
+      to: [email],
+      subject: RESEND_SESSIONS_SUBJECT,
+      html: this.buildMagicLinkHtml(link, ttlMinutes),
+      text: this.buildMagicLinkText(link, ttlMinutes),
+    });
 
-      const responseBody = await this.readResponseBody(response);
-      if (!response.ok) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const attemptLabel = `${attempt}/${maxAttempts}`;
+      try {
+        const response = await fetch(RESEND_API_URL, {
+          method: 'POST',
+          signal: AbortSignal.timeout(timeoutMs),
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: payload,
+        });
+
+        const responseBody = await this.readResponseBody(response);
+        if (!response.ok) {
+          const responseDetails = `Resend send failed (${response.status} ${response.statusText}) for ${email}: ${responseBody}`;
+          if (RETRYABLE_RESEND_STATUS_CODES.has(response.status) && attempt < maxAttempts) {
+            const delayMs = this.getResendRetryDelayMs(attempt);
+            this.logger.warn(`${responseDetails}. Retrying in ${delayMs}ms (attempt ${attemptLabel}).`);
+            await this.delay(delayMs);
+            continue;
+          }
+
+          this.logger.error(responseDetails);
+          throw new InternalServerErrorException(`Failed to send magic link email: ${responseBody}`);
+        }
+
+        if (this.isDevLoggingEnabled()) {
+          const resendId = this.getResendResponseId(responseBody);
+          this.logger.debug(
+            JSON.stringify({
+              event: 'email.resend.sent',
+              provider: 'resend',
+              to: email,
+              from,
+              resendId,
+              attempt,
+            }),
+          );
+        }
+
+        return;
+      } catch (error) {
+        if (this.isRetryableResendError(error) && attempt < maxAttempts) {
+          const delayMs = this.getResendRetryDelayMs(attempt);
+          this.logger.warn(
+            `Resend send attempt ${attemptLabel} for ${email} failed with retryable error: ${this.getErrorMessage(error)}. Retrying in ${delayMs}ms.`,
+          );
+          await this.delay(delayMs);
+          continue;
+        }
+
         this.logger.error(
-          `Resend send failed (${response.status} ${response.statusText}) for ${email}: ${responseBody}`,
+          `Resend send threw for ${email}: ${this.getErrorMessage(error)}`,
+          error instanceof Error ? error.stack : undefined,
         );
-        throw new InternalServerErrorException(`Failed to send magic link email: ${responseBody}`);
+        throw error;
       }
-
-      if (this.isDevLoggingEnabled()) {
-        const resendId = this.getResendResponseId(responseBody);
-        this.logger.debug(
-          JSON.stringify({
-            event: 'email.resend.sent',
-            provider: 'resend',
-            to: email,
-            from,
-            resendId,
-          }),
-        );
-      }
-    } catch (error) {
-      this.logger.error(
-        `Resend send threw for ${email}: ${this.getErrorMessage(error)}`,
-        error instanceof Error ? error.stack : undefined,
-      );
-      throw error;
     }
   }
 
@@ -152,6 +180,79 @@ export class EmailService {
     }
 
     return DEFAULT_RESEND_TIMEOUT_MS;
+  }
+
+  private getResendRetryCount(): number {
+    const raw = normalizeEnv(this.configService.get<string>('RESEND_RETRY_COUNT'));
+    const parsed = Number.parseInt(raw ?? '', 10);
+    if (Number.isInteger(parsed) && parsed >= 0 && parsed <= 5) {
+      return parsed;
+    }
+
+    return DEFAULT_RESEND_RETRY_COUNT;
+  }
+
+  private getResendRetryBaseDelayMs(): number {
+    const raw = normalizeEnv(this.configService.get<string>('RESEND_RETRY_BASE_DELAY_MS'));
+    const parsed = Number.parseInt(raw ?? '', 10);
+    if (Number.isInteger(parsed) && parsed >= 100 && parsed <= 5000) {
+      return parsed;
+    }
+
+    return DEFAULT_RESEND_RETRY_BASE_DELAY_MS;
+  }
+
+  private getResendRetryDelayMs(attempt: number): number {
+    const base = this.getResendRetryBaseDelayMs();
+    const exponential = base * (2 ** Math.max(0, attempt - 1));
+    const jitter = Math.floor(Math.random() * base);
+    return Math.min(exponential + jitter, 10_000);
+  }
+
+  private async delay(ms: number): Promise<void> {
+    await new Promise((resolve) => {
+      setTimeout(resolve, ms);
+    });
+  }
+
+  private isRetryableResendError(error: unknown): boolean {
+    if (!(error instanceof Error)) {
+      return false;
+    }
+
+    const name = error.name.toLowerCase();
+    const message = error.message.toLowerCase();
+    if (
+      name.includes('timeout')
+      || message.includes('aborted due to timeout')
+      || message.includes('fetch failed')
+    ) {
+      return true;
+    }
+
+    const cause = (error as Error & { cause?: unknown }).cause;
+    if (!cause || typeof cause !== 'object') {
+      return false;
+    }
+
+    const causeRecord = cause as { code?: unknown; message?: unknown };
+    const causeCode = typeof causeRecord.code === 'string' ? causeRecord.code.toLowerCase() : '';
+    const causeMessage = typeof causeRecord.message === 'string' ? causeRecord.message.toLowerCase() : '';
+    if (
+      causeCode.includes('timeout')
+      || causeCode.includes('econnreset')
+      || causeCode.includes('econnrefused')
+      || causeCode.includes('enotfound')
+      || causeCode.includes('eai_again')
+      || causeCode.includes('und_err')
+      || causeMessage.includes('timeout')
+      || causeMessage.includes('socket')
+      || causeMessage.includes('network')
+    ) {
+      return true;
+    }
+
+    return false;
   }
 
   private getErrorMessage(error: unknown): string {
