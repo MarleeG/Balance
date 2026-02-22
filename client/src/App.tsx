@@ -1,7 +1,9 @@
 import { BrowserRouter, Link, Navigate, Route, Routes } from 'react-router-dom';
 import { HomePage } from './pages/HomePage';
+import { FileLabelsPage } from './pages/FileLabelsPage';
 import { MagicLinkVerifyPage } from './pages/MagicLinkVerifyPage';
 import { SessionDashboardPage } from './pages/SessionDashboardPage';
+import { SessionInsightsPage } from './pages/SessionInsightsPage';
 import { SessionsListPage } from './pages/SessionsListPage';
 import { ThemeToggle } from './theme/ThemeToggle';
 import { ThemeProvider } from './theme/theme-provider';
@@ -27,6 +29,8 @@ function App() {
             <Route path="/auth/verify" element={<MagicLinkVerifyPage />} />
             <Route path="/sessions" element={<SessionsListPage />} />
             <Route path="/sessions/:sessionId" element={<SessionDashboardPage />} />
+            <Route path="/sessions/:sessionId/insights" element={<SessionInsightsPage />} />
+            <Route path="/sessions/:sessionId/files/:fileId/labels" element={<FileLabelsPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </BrowserRouter>

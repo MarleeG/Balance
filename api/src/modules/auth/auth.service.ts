@@ -157,7 +157,7 @@ export class AuthService {
         expiresAt: { $gt: now },
       },
       { $set: { usedAt: now } },
-      { new: true },
+      { returnDocument: 'after' },
     ).exec();
 
     await this.logVerifyTokenDiagnostics(tokenHash, now, tokenDoc);

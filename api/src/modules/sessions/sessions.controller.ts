@@ -2,6 +2,7 @@ import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UnauthorizedExc
 import type { AccessTokenPayload } from '../auth/auth.service';
 import { AuthenticatedRequest, JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CreateSessionDto } from './dto/create-session.dto';
+import { ExtendSessionDto } from './dto/extend-session.dto';
 import { UpdateSessionSettingsDto } from './dto/update-session-settings.dto';
 import {
   CreateSessionResponse,
@@ -56,6 +57,20 @@ export class SessionsController {
       sessionId,
       this.getAuthenticatedUser(req),
       { autoCategorizeOnUpload: dto.autoCategorizeOnUpload },
+    );
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post(':sessionId/extend')
+  extendSession(
+    @Param('sessionId') sessionId: string,
+    @Body() dto: ExtendSessionDto,
+    @Req() req: AuthenticatedRequest,
+  ): Promise<SessionSummary> {
+    return this.sessionsService.extendSessionExpiration(
+      sessionId,
+      this.getAuthenticatedUser(req),
+      dto.days,
     );
   }
 

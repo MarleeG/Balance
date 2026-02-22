@@ -145,6 +145,13 @@ export interface SessionFileSummary {
   uploadedAt: string;
 }
 
+export interface SessionFilesGroupedSummary {
+  credit: SessionFileSummary[];
+  checking: SessionFileSummary[];
+  savings: SessionFileSummary[];
+  root: SessionFileSummary[];
+}
+
 export interface UpdateFileResponse {
   id: string;
   originalName: string;
@@ -321,6 +328,7 @@ export class FilesService {
       });
 
       const fileId = fileRecord._id.toString();
+      fileRecord.fileId = fileId;
       fileRecord.s3Key = this.buildS3Key(sessionId, statementType, fileId);
       await fileRecord.save();
 
@@ -439,6 +447,37 @@ export class FilesService {
     });
   }
 
+  async listSessionFilesGrouped(
+    sessionId: string,
+    user: AccessTokenPayload,
+  ): Promise<SessionFilesGroupedSummary> {
+    const files = await this.listSessionFiles(sessionId, user);
+    const grouped: SessionFilesGroupedSummary = {
+      credit: [],
+      checking: [],
+      savings: [],
+      root: [],
+    };
+
+    for (const file of files) {
+      if (file.accountType === AccountType.Credit) {
+        grouped.credit.push(file);
+        continue;
+      }
+      if (file.accountType === AccountType.Checking) {
+        grouped.checking.push(file);
+        continue;
+      }
+      if (file.accountType === AccountType.Savings) {
+        grouped.savings.push(file);
+        continue;
+      }
+      grouped.root.push(file);
+    }
+
+    return grouped;
+  }
+
   async updateFile(
     fileId: string,
     updates: UpdateFileParams,
@@ -473,6 +512,7 @@ export class FilesService {
     }
 
     file.confirmedByUser = true;
+    this.ensureFileId(file);
     this.ensureByteSize(file);
     await file.save();
 
@@ -492,10 +532,14 @@ export class FilesService {
     const file = await this.getAccessibleFile(fileId);
     await this.assertSessionAccess(file.sessionId, user, false);
 
+    // File deletion intentionally only removes the binary and marks the file deleted.
+    // Parsed transactions, labels, and label-rules are retained so label intelligence
+    // can continue to work on future uploads.
     await this.storageService.deleteObject(file.s3Bucket, file.s3Key);
 
     file.status = FileStatus.Deleted;
     file.deletedAt = new Date();
+    this.ensureFileId(file);
     this.ensureByteSize(file);
     await file.save();
 
@@ -680,6 +724,14 @@ export class FilesService {
     if (typeof file.size === 'number' && file.size > 0) {
       file.byteSize = file.size;
     }
+  }
+
+  private ensureFileId(file: FileDocument): void {
+    if (file.fileId && file.fileId.trim().length > 0) {
+      return;
+    }
+
+    file.fileId = file._id.toString();
   }
 
   private normalizeEditableFileName(originalName: string): string {

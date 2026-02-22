@@ -36,6 +36,9 @@ export class FileRecord {
   @Prop({ required: true, trim: true })
   sessionId: string;
 
+  @Prop({ trim: true })
+  fileId?: string;
+
   @Prop({ required: true, trim: true })
   originalName: string;
 
@@ -109,9 +112,19 @@ export class FileRecord {
 
   @Prop()
   deletedAt?: Date;
+
+  createdAt?: Date;
+  updatedAt?: Date;
 }
 
 export const FileSchema = SchemaFactory.createForClass(FileRecord);
+FileSchema.pre('validate', function setFileId() {
+  const doc = this as FileDocument;
+  if (!doc.fileId && doc._id) {
+    doc.fileId = doc._id.toString();
+  }
+});
 FileSchema.index({ sessionId: 1 });
+FileSchema.index({ fileId: 1 }, { unique: true, sparse: true });
 FileSchema.index({ sessionId: 1, uploadedAt: -1 });
 FileSchema.index({ sessionId: 1, category: 1, uploadedAt: -1 });
