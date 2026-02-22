@@ -112,3 +112,10 @@ npm --prefix client run preview
 
 - `api/README.md` and `client/README.md` are still framework template READMEs.
 - Root README is the primary project entry point.
+
+## File Naming Limits
+
+- Uploaded files keep their original filename.
+- Each uploaded file also has an editable display name.
+- Display name max length is `80` characters.
+- Display names with only whitespace are invalid.

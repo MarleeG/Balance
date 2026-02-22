@@ -10,6 +10,7 @@ import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { isValidObjectId, Model } from 'mongoose';
 import {
+  AccountType,
   FileCategory,
   FileDocument,
   FileRecord,
@@ -21,13 +22,19 @@ import type { AccessTokenPayload } from '../auth/auth.service';
 import { StorageService } from '../storage/storage.service';
 
 const DEFAULT_MAX_FILES_PER_UPLOAD = 10;
-const DEFAULT_MAX_FILE_SIZE_MB = 15;
+const DEFAULT_MAX_FILE_SIZE_MB = 25;
+const MAX_DISPLAY_NAME_LENGTH = 80;
 const ALLOWED_MIME_TYPE = 'application/pdf';
 const FILE_UPLOAD_FAILED_MESSAGE = 'Failed to upload file to storage.';
 const SESSION_NOT_FOUND_MESSAGE = 'Session not found.';
 const FILE_NOT_FOUND_MESSAGE = 'File not found.';
 const SESSION_ACCESS_FORBIDDEN_MESSAGE = 'Access to this session is not allowed.';
 const DUPLICATE_FILE_NAME_REASON = 'A file with this name already exists in this session.';
+const POSSIBLE_DUPLICATE_WARNING_PREFIX = 'Possible duplicate: this original filename matches an existing file renamed to';
+const FILE_NAME_EMPTY_MESSAGE = 'File name cannot be empty.';
+const FILE_EXTENSION_CHANGE_NOT_ALLOWED_MESSAGE = 'File extension cannot be changed.';
+const DISPLAY_NAME_EMPTY_MESSAGE = 'Display name cannot be empty.';
+const DISPLAY_NAME_TOO_LONG_MESSAGE = `Display name must be ${MAX_DISPLAY_NAME_LENGTH} characters or fewer.`;
 const FILES_MOVE_EMPTY_MESSAGE = 'At least one file id is required for move.';
 const STATEMENT_KEYWORDS: Record<Exclude<StatementType, StatementType.Unknown>, string[]> = {
   [StatementType.Credit]: [
@@ -84,6 +91,8 @@ export interface MultipartFile {
 export interface UploadedFileItem {
   id: string;
   originalName: string;
+  displayName: string;
+  accountType?: AccountType;
   statementType: StatementType;
   category: FileCategory;
   autoDetectedType: StatementType;
@@ -124,8 +133,10 @@ export interface SessionFileSummary {
   id: string;
   sessionId: string;
   originalName: string;
+  displayName: string;
   mimeType: string;
   size: number;
+  accountType?: AccountType;
   statementType: StatementType;
   category: FileCategory;
   status: FileStatus;
@@ -136,8 +147,18 @@ export interface SessionFileSummary {
 
 export interface UpdateFileResponse {
   id: string;
+  originalName: string;
+  displayName: string;
+  accountType?: AccountType;
   statementType: StatementType;
+  category: FileCategory;
   confirmedByUser: boolean;
+}
+
+export interface UpdateFileParams {
+  statementType?: StatementType;
+  originalName?: string;
+  displayName?: string;
 }
 
 export interface DeleteFileResponse {
@@ -165,6 +186,7 @@ interface DetectionResult {
 @Injectable()
 export class FilesService {
   private readonly logger = new Logger(FilesService.name);
+  private pdfParsePolyfillsInitialized = false;
 
   constructor(
     @InjectModel(FileRecord.name)
@@ -193,7 +215,8 @@ export class FilesService {
     const bucket = this.getRequiredEnv('S3_BUCKET_NAME');
     const metaMap = statementTypeByName ?? new Map<string, StatementType>();
     const statementTypeByFileNameKey = this.buildStatementTypeByFileNameKey(metaMap);
-    const fileNameKeysInSession = await this.getExistingFileNameKeys(sessionId);
+    const filesByFileNameKey = await this.getExistingFilesByFileNameKey(sessionId);
+    const fileNameKeysInSession = new Set(filesByFileNameKey.keys());
 
     const uploaded: UploadedFileItem[] = [];
     const rejected: RejectedFileItem[] = [];
@@ -210,14 +233,38 @@ export class FilesService {
 
     for (const file of acceptedBatch) {
       const originalName = this.normalizeOriginalFileName(file.originalname);
+      let displayName: string;
+      try {
+        displayName = this.normalizeDisplayName(originalName);
+      } catch (error) {
+        rejected.push({
+          originalName,
+          reason: this.getDisplayNameValidationReason(error),
+        });
+        continue;
+      }
       const fileNameKey = this.getFileNameKey(originalName);
 
       if (fileNameKeysInSession.has(fileNameKey)) {
-        rejected.push({
-          originalName,
-          reason: DUPLICATE_FILE_NAME_REASON,
+        const matchingFiles = filesByFileNameKey.get(fileNameKey) ?? [];
+        const renamedMatch = matchingFiles.find((existingFile) => {
+          const existingDisplayName = this.resolveDisplayName(existingFile.displayName, existingFile.originalName);
+          return this.getFileNameKey(existingDisplayName) !== fileNameKey;
         });
-        continue;
+
+        if (!renamedMatch) {
+          rejected.push({
+            originalName,
+            reason: DUPLICATE_FILE_NAME_REASON,
+          });
+          continue;
+        }
+
+        const renamedDisplayName = this.resolveDisplayName(renamedMatch.displayName, renamedMatch.originalName);
+        warnings.push({
+          originalName,
+          reason: `${POSSIBLE_DUPLICATE_WARNING_PREFIX} "${renamedDisplayName}".`,
+        });
       }
 
       if (file.mimetype !== ALLOWED_MIME_TYPE) {
@@ -251,12 +298,18 @@ export class FilesService {
         ? detection.autoDetectedType
         : requestedStatementType;
       const category = this.resolveUploadCategory(statementType, session);
+      const accountType = this.getAccountTypeFromStatementType(statementType);
       fileNameKeysInSession.add(fileNameKey);
+      const currentEntries = filesByFileNameKey.get(fileNameKey) ?? [];
+      currentEntries.push({ originalName, displayName });
+      filesByFileNameKey.set(fileNameKey, currentEntries);
       const fileRecord = new this.filesModel({
         sessionId,
         originalName,
+        displayName,
         mimeType: file.mimetype,
-        size: file.size,
+        byteSize: file.size,
+        accountType,
         statementType,
         category,
         autoDetectedType: detection.autoDetectedType,
@@ -268,7 +321,7 @@ export class FilesService {
       });
 
       const fileId = fileRecord._id.toString();
-      fileRecord.s3Key = this.buildS3Key(sessionId, category, fileId, originalName);
+      fileRecord.s3Key = this.buildS3Key(sessionId, statementType, fileId);
       await fileRecord.save();
 
       try {
@@ -283,9 +336,12 @@ export class FilesService {
         fileRecord.uploadedAt = new Date();
         await fileRecord.save();
 
+        const accountType = this.resolveAccountType(fileRecord.accountType, fileRecord.statementType);
         uploaded.push({
           id: fileId,
           originalName: fileRecord.originalName,
+          displayName: this.resolveDisplayName(fileRecord.displayName, fileRecord.originalName),
+          ...(accountType ? { accountType } : {}),
           statementType: fileRecord.statementType,
           category: this.normalizeFileCategory(fileRecord.category),
           autoDetectedType: fileRecord.autoDetectedType,
@@ -363,39 +419,71 @@ export class FilesService {
       status: { $ne: FileStatus.Deleted },
     }).sort({ uploadedAt: -1, createdAt: -1 }).exec();
 
-    return files.map((file) => ({
-      id: file._id.toString(),
-      sessionId: file.sessionId,
-      originalName: file.originalName,
-      mimeType: file.mimeType,
-      size: file.size,
-      statementType: file.statementType,
-      category: this.normalizeFileCategory(file.category),
-      status: file.status,
-      s3Bucket: file.s3Bucket,
-      s3Key: file.s3Key,
-      uploadedAt: new Date(file.uploadedAt).toISOString(),
-    }));
+    return files.map((file) => {
+      const accountType = this.resolveAccountType(file.accountType, file.statementType);
+      return {
+        id: file._id.toString(),
+        sessionId: file.sessionId,
+        originalName: file.originalName,
+        displayName: this.resolveDisplayName(file.displayName, file.originalName),
+        mimeType: file.mimeType,
+        size: this.resolveByteSize(file),
+        ...(accountType ? { accountType } : {}),
+        statementType: file.statementType,
+        category: this.normalizeFileCategory(file.category),
+        status: file.status,
+        s3Bucket: file.s3Bucket,
+        s3Key: file.s3Key,
+        uploadedAt: new Date(file.uploadedAt).toISOString(),
+      };
+    });
   }
 
-  async updateFileStatementType(
+  async updateFile(
     fileId: string,
-    statementType: StatementType,
+    updates: UpdateFileParams,
     user: AccessTokenPayload,
   ): Promise<UpdateFileResponse> {
     const file = await this.getAccessibleFile(fileId);
     await this.assertSessionAccess(file.sessionId, user, false);
 
-    file.statementType = statementType;
-    if (this.normalizeFileCategory(file.category) !== FileCategory.Unfiled) {
-      file.category = CATEGORY_FROM_STATEMENT[statementType];
+    if (updates.statementType === undefined && updates.originalName === undefined && updates.displayName === undefined) {
+      throw new BadRequestException('At least one updatable field must be provided.');
     }
+
+    if (updates.statementType !== undefined) {
+      file.statementType = updates.statementType;
+      file.accountType = this.getAccountTypeFromStatementType(updates.statementType);
+      if (this.normalizeFileCategory(file.category) !== FileCategory.Unfiled) {
+        file.category = CATEGORY_FROM_STATEMENT[updates.statementType];
+      }
+    }
+
+    if (updates.originalName !== undefined) {
+      const nextName = this.normalizeEditableFileName(updates.originalName);
+      this.assertFileExtensionUnchanged(file.originalName, nextName);
+      if (this.getFileNameKey(nextName) !== this.getFileNameKey(file.originalName)) {
+        await this.assertUniqueFileNameInSession(nextName, file.sessionId, file._id.toString());
+      }
+      file.originalName = nextName;
+    }
+
+    if (updates.displayName !== undefined) {
+      file.displayName = this.normalizeDisplayName(updates.displayName);
+    }
+
     file.confirmedByUser = true;
+    this.ensureByteSize(file);
     await file.save();
 
+    const accountType = this.resolveAccountType(file.accountType, file.statementType);
     return {
       id: file._id.toString(),
+      originalName: file.originalName,
+      displayName: this.resolveDisplayName(file.displayName, file.originalName),
+      ...(accountType ? { accountType } : {}),
       statementType: file.statementType,
+      category: this.normalizeFileCategory(file.category),
       confirmedByUser: file.confirmedByUser,
     };
   }
@@ -408,6 +496,7 @@ export class FilesService {
 
     file.status = FileStatus.Deleted;
     file.deletedAt = new Date();
+    this.ensureByteSize(file);
     await file.save();
 
     return {
@@ -438,6 +527,7 @@ export class FilesService {
       category: FileCategory;
       confirmedByUser: boolean;
       statementType?: StatementType;
+      accountType?: AccountType;
     } = {
       category,
       confirmedByUser: true,
@@ -445,6 +535,7 @@ export class FilesService {
 
     if (targetStatementType) {
       updateSet.statementType = targetStatementType;
+      updateSet.accountType = this.getAccountTypeFromStatementType(targetStatementType);
     }
 
     const result = await this.filesModel.updateMany(
@@ -532,25 +623,10 @@ export class FilesService {
 
   private buildS3Key(
     sessionId: string,
-    category: FileCategory,
+    accountType: StatementType,
     fileId: string,
-    originalName: string,
   ): string {
-    const safeName = this.sanitizeFileName(originalName);
-    const folder = category === FileCategory.Unfiled ? 'root' : category;
-    return `sessions/${sessionId}/${folder}/${fileId}-${safeName}.pdf`;
-  }
-
-  private sanitizeFileName(originalName: string): string {
-    const withoutPdfExt = originalName.replace(/\.pdf$/i, '');
-    const sanitized = withoutPdfExt
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 80);
-
-    return sanitized || 'statement';
+    return `${sessionId}/${accountType}/${fileId}.pdf`;
   }
 
   private normalizeOriginalFileName(originalName: string | undefined): string {
@@ -558,8 +634,164 @@ export class FilesService {
     return normalized || 'statement.pdf';
   }
 
+  private getAccountTypeFromStatementType(statementType: StatementType): AccountType | undefined {
+    switch (statementType) {
+      case StatementType.Credit:
+        return AccountType.Credit;
+      case StatementType.Checking:
+        return AccountType.Checking;
+      case StatementType.Savings:
+        return AccountType.Savings;
+      case StatementType.Unknown:
+      default:
+        return undefined;
+    }
+  }
+
+  private resolveAccountType(accountType: AccountType | undefined, statementType: StatementType): AccountType | undefined {
+    if (
+      accountType === AccountType.Credit
+      || accountType === AccountType.Checking
+      || accountType === AccountType.Savings
+    ) {
+      return accountType;
+    }
+
+    return this.getAccountTypeFromStatementType(statementType);
+  }
+
+  private resolveByteSize(file: Pick<FileDocument, 'byteSize' | 'size'>): number {
+    if (typeof file.byteSize === 'number' && file.byteSize > 0) {
+      return file.byteSize;
+    }
+
+    if (typeof file.size === 'number' && file.size > 0) {
+      return file.size;
+    }
+
+    return 0;
+  }
+
+  private ensureByteSize(file: FileDocument): void {
+    if (typeof file.byteSize === 'number' && file.byteSize > 0) {
+      return;
+    }
+
+    if (typeof file.size === 'number' && file.size > 0) {
+      file.byteSize = file.size;
+    }
+  }
+
+  private normalizeEditableFileName(originalName: string): string {
+    const normalized = originalName?.trim();
+    if (!normalized) {
+      throw new BadRequestException(FILE_NAME_EMPTY_MESSAGE);
+    }
+
+    return normalized;
+  }
+
+  private normalizeDisplayName(displayName: string): string {
+    const normalized = displayName
+      .trim()
+      .replace(/\s+/g, ' ')
+      .replace(/[^A-Za-z0-9 ._()\-]/g, '-');
+
+    if (!normalized) {
+      throw new BadRequestException(DISPLAY_NAME_EMPTY_MESSAGE);
+    }
+
+    if (normalized.length > MAX_DISPLAY_NAME_LENGTH) {
+      throw new BadRequestException(DISPLAY_NAME_TOO_LONG_MESSAGE);
+    }
+
+    return normalized;
+  }
+
+  private getDisplayNameValidationReason(error: unknown): string {
+    if (error instanceof BadRequestException) {
+      const response = error.getResponse();
+      if (typeof response === 'string') {
+        return response;
+      }
+
+      if (response && typeof response === 'object' && 'message' in response) {
+        const message = (response as { message?: string | string[] }).message;
+        if (typeof message === 'string' && message.length > 0) {
+          return message;
+        }
+        if (Array.isArray(message) && typeof message[0] === 'string' && message[0].length > 0) {
+          return message[0];
+        }
+      }
+
+      if (error.message) {
+        return error.message;
+      }
+    }
+
+    return 'Invalid display name.';
+  }
+
+  private resolveDisplayName(displayName: string | undefined, originalName: string): string {
+    const candidate = displayName && displayName.trim().length > 0
+      ? displayName
+      : originalName;
+    return this.normalizeDisplayNameFallback(candidate);
+  }
+
+  private normalizeDisplayNameFallback(value: string): string {
+    const normalized = value
+      .trim()
+      .replace(/\s+/g, ' ')
+      .replace(/[^A-Za-z0-9 ._()\-]/g, '-')
+      .slice(0, MAX_DISPLAY_NAME_LENGTH);
+
+    return normalized || 'statement';
+  }
+
+  private assertFileExtensionUnchanged(currentName: string, nextName: string): void {
+    const currentExtension = this.getFileExtension(currentName);
+    const nextExtension = this.getFileExtension(nextName);
+    if (currentExtension !== nextExtension) {
+      throw new BadRequestException(FILE_EXTENSION_CHANGE_NOT_ALLOWED_MESSAGE);
+    }
+  }
+
+  private async assertUniqueFileNameInSession(
+    originalName: string,
+    sessionId: string,
+    excludedFileId: string,
+  ): Promise<void> {
+    const escapedName = this.escapeRegex(originalName);
+    const duplicate = await this.filesModel.exists({
+      sessionId,
+      status: { $ne: FileStatus.Deleted },
+      _id: { $ne: excludedFileId },
+      originalName: { $regex: `^${escapedName}$`, $options: 'i' },
+    });
+
+    if (duplicate) {
+      throw new BadRequestException(DUPLICATE_FILE_NAME_REASON);
+    }
+  }
+
   private getFileNameKey(fileName: string): string {
     return fileName.trim().toLowerCase();
+  }
+
+  private getFileExtension(fileName: string): string {
+    const normalized = fileName.trim();
+    const lastDot = normalized.lastIndexOf('.');
+    if (lastDot <= 0) {
+      return '';
+    }
+
+    return normalized.slice(lastDot).toLowerCase();
+  }
+
+  private escapeRegex(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
   private resolveUploadCategory(statementType: StatementType, session: SessionDocument): FileCategory {
@@ -617,25 +849,30 @@ export class FilesService {
     return byFileNameKey;
   }
 
-  private async getExistingFileNameKeys(sessionId: string): Promise<Set<string>> {
+  private async getExistingFilesByFileNameKey(
+    sessionId: string,
+  ): Promise<Map<string, Array<{ originalName: string; displayName?: string }>>> {
     const existingFiles = await this.filesModel.find({
       sessionId,
       status: { $ne: FileStatus.Deleted },
     })
-      .select({ originalName: 1, _id: 0 })
-      .lean<Array<{ originalName?: string }>>()
+      .select({ originalName: 1, displayName: 1, _id: 0 })
+      .lean<Array<{ originalName?: string; displayName?: string }>>()
       .exec();
 
-    const fileNameKeys = new Set<string>();
+    const filesByNameKey = new Map<string, Array<{ originalName: string; displayName?: string }>>();
     for (const file of existingFiles) {
       if (!file?.originalName) {
         continue;
       }
 
-      fileNameKeys.add(this.getFileNameKey(file.originalName));
+      const nameKey = this.getFileNameKey(file.originalName);
+      const records = filesByNameKey.get(nameKey) ?? [];
+      records.push({ originalName: file.originalName, displayName: file.displayName });
+      filesByNameKey.set(nameKey, records);
     }
 
-    return fileNameKeys;
+    return filesByNameKey;
   }
 
   private getRequiredEnv(name: string): string {
@@ -648,20 +885,10 @@ export class FilesService {
   }
 
   private getMaxFilesPerUpload(): number {
-    const parsed = Number.parseInt(this.configService.get<string>('MAX_FILES_PER_UPLOAD') ?? '', 10);
-    if (Number.isInteger(parsed) && parsed > 0) {
-      return parsed;
-    }
-
     return DEFAULT_MAX_FILES_PER_UPLOAD;
   }
 
   private getMaxFileSizeMb(): number {
-    const parsed = Number.parseInt(this.configService.get<string>('MAX_FILE_SIZE_MB') ?? '', 10);
-    if (Number.isInteger(parsed) && parsed > 0) {
-      return parsed;
-    }
-
     return DEFAULT_MAX_FILE_SIZE_MB;
   }
 
@@ -717,7 +944,15 @@ export class FilesService {
   }
 
   private async extractPdfText(pdfBuffer: Buffer): Promise<string> {
-    const { PDFParse } = await import('pdf-parse');
+    await this.ensurePdfParseRuntimePolyfills();
+
+    let PDFParse: typeof import('pdf-parse').PDFParse;
+    try {
+      ({ PDFParse } = await import('pdf-parse'));
+    } catch {
+      return '';
+    }
+
     const parser = new PDFParse({ data: pdfBuffer });
     try {
       const result = await parser.getText();
@@ -726,6 +961,39 @@ export class FilesService {
       return '';
     } finally {
       await parser.destroy().catch(() => undefined);
+    }
+  }
+
+  private async ensurePdfParseRuntimePolyfills(): Promise<void> {
+    if (this.pdfParsePolyfillsInitialized) {
+      return;
+    }
+
+    this.pdfParsePolyfillsInitialized = true;
+    const runtime = globalThis as Record<string, unknown>;
+    if (runtime.DOMMatrix && runtime.ImageData && runtime.Path2D) {
+      return;
+    }
+
+    try {
+      // pdf-parse/pdfjs expects these globals in some Node runtimes.
+      // @napi-rs/canvas is a transitive dependency of pdf-parse.
+      const canvas = require('@napi-rs/canvas') as {
+        DOMMatrix?: unknown;
+        ImageData?: unknown;
+        Path2D?: unknown;
+      };
+      if (!runtime.DOMMatrix && canvas.DOMMatrix) {
+        runtime.DOMMatrix = canvas.DOMMatrix;
+      }
+      if (!runtime.ImageData && canvas.ImageData) {
+        runtime.ImageData = canvas.ImageData;
+      }
+      if (!runtime.Path2D && canvas.Path2D) {
+        runtime.Path2D = canvas.Path2D;
+      }
+    } catch {
+      // Keep best-effort behavior; detection falls back to unknown.
     }
   }
 
