@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { ChangeEvent } from 'react';
+import type { ChangeEvent, KeyboardEvent } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ApiError, apiClient, apiRequestBlob, getAccessToken } from '../api';
 import { AppLayout } from '../ui/AppLayout';
@@ -12,6 +12,7 @@ type FileCategory = StatementType | 'unfiled';
 interface FileRecordItem {
   id: string;
   originalName: string;
+  displayName?: string;
   statementType: StatementType;
   category?: FileCategory;
   autoDetectedType?: StatementType;
@@ -60,6 +61,14 @@ interface MoveFilesToCategoryResponse {
   category: FileCategory;
 }
 
+interface UpdateFileResponse {
+  id: string;
+  originalName: string;
+  displayName: string;
+  statementType: StatementType;
+  category: FileCategory;
+}
+
 interface PendingUploadFile {
   localId: string;
   file: File;
@@ -72,6 +81,9 @@ interface PendingUploadFile {
 }
 
 const MAX_FILES_PER_UPLOAD = 10;
+const MAX_FILE_SIZE_MB = 25;
+const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+const MAX_DISPLAY_NAME_LENGTH = 80;
 const STATEMENT_TYPE_OPTIONS: StatementType[] = ['unknown', 'credit', 'checking', 'savings'];
 const FOLDER_OPTIONS: StatementType[] = ['credit', 'checking', 'savings', 'unknown'];
 const MOVE_TARGET_OPTIONS: FileCategory[] = ['unfiled', ...FOLDER_OPTIONS];
@@ -119,6 +131,83 @@ function toFileCategory(value: unknown): FileCategory {
   return 'unfiled';
 }
 
+function normalizeDisplayName(value: string): string {
+  return value
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/[^A-Za-z0-9 ._()\-]/g, '-');
+}
+
+function getDisplayNameValidationError(value: string): string | null {
+  if (value.length > MAX_DISPLAY_NAME_LENGTH) {
+    return `Display name must be ${MAX_DISPLAY_NAME_LENGTH} characters or fewer.`;
+  }
+
+  const normalized = normalizeDisplayName(value);
+  if (normalized.length === 0) {
+    return 'Display name cannot be empty.';
+  }
+
+  return null;
+}
+
+function resolveDisplayName(file: Pick<FileRecordItem, 'displayName' | 'originalName'>): string {
+  const preferred = file.displayName?.trim();
+  if (preferred) {
+    return preferred;
+  }
+
+  return file.originalName;
+}
+
+function getFileExtension(fileName: string): string {
+  const trimmed = fileName.trim();
+  const lastDot = trimmed.lastIndexOf('.');
+  if (lastDot <= 0) {
+    return '';
+  }
+
+  return trimmed.slice(lastDot);
+}
+
+function splitDisplayNameForEdit(displayName: string, lockedExtension: string): string {
+  if (!lockedExtension) {
+    return displayName;
+  }
+
+  if (displayName.toLowerCase().endsWith(lockedExtension.toLowerCase())) {
+    return displayName.slice(0, -lockedExtension.length);
+  }
+
+  return displayName;
+}
+
+function getFileNameKey(fileName: string): string {
+  return fileName.trim().toLowerCase();
+}
+
+function getPendingFileValidationWarning(file: File): string | undefined {
+  const warnings: string[] = [];
+  const normalizedFileName = normalizeDisplayName(file.name);
+  if (normalizedFileName.length > MAX_DISPLAY_NAME_LENGTH) {
+    warnings.push(`File name must be ${MAX_DISPLAY_NAME_LENGTH} characters or fewer.`);
+  }
+
+  if (file.type !== 'application/pdf') {
+    warnings.push('Only PDF files can be uploaded.');
+  }
+
+  if (file.size > MAX_FILE_SIZE_BYTES) {
+    warnings.push(`File exceeds max size (${MAX_FILE_SIZE_MB}MB).`);
+  }
+
+  if (warnings.length === 0) {
+    return undefined;
+  }
+
+  return warnings.join(' ');
+}
+
 export function SessionDashboardPage() {
   const { sessionId } = useParams();
   const navigate = useNavigate();
@@ -128,16 +217,21 @@ export function SessionDashboardPage() {
   const [existingFiles, setExistingFiles] = useState<FileRecordItem[]>([]);
   const [pendingFiles, setPendingFiles] = useState<PendingUploadFile[]>([]);
   const [typeDrafts, setTypeDrafts] = useState<Record<string, StatementType>>({});
+  const [nameDrafts, setNameDrafts] = useState<Record<string, string>>({});
+  const [editingNameFileId, setEditingNameFileId] = useState<string | null>(null);
 
   const [isLoadingFiles, setIsLoadingFiles] = useState(true);
   const [isDetectingPendingTypes, setIsDetectingPendingTypes] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [isDeletingSession, setIsDeletingSession] = useState(false);
   const [isDeletingAllFiles, setIsDeletingAllFiles] = useState(false);
+  const [isDeletingSelectedFiles, setIsDeletingSelectedFiles] = useState(false);
   const [isUpdatingSessionSettings, setIsUpdatingSessionSettings] = useState(false);
   const [isMovingFilesToFolder, setIsMovingFilesToFolder] = useState(false);
   const [showDeleteSessionConfirm, setShowDeleteSessionConfirm] = useState(false);
   const [showDeleteAllFilesConfirm, setShowDeleteAllFilesConfirm] = useState(false);
+  const [showDeleteSelectedFilesConfirm, setShowDeleteSelectedFilesConfirm] = useState(false);
+  const [filePendingDelete, setFilePendingDelete] = useState<{ id: string; displayName: string } | null>(null);
   const [busyFileId, setBusyFileId] = useState<string | null>(null);
   const [viewingFileId, setViewingFileId] = useState<string | null>(null);
   const [autoCategorizeOnUpload, setAutoCategorizeOnUpload] = useState(true);
@@ -148,6 +242,8 @@ export function SessionDashboardPage() {
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [uploadWarnings, setUploadWarnings] = useState<UploadWarningItem[]>([]);
   const [uploadRejected, setUploadRejected] = useState<UploadRejectedItem[]>([]);
+  const [resolvingWarningKey, setResolvingWarningKey] = useState<string | null>(null);
+  const isDeletingAnyFiles = isDeletingAllFiles || isDeletingSelectedFiles;
 
   useEffect(() => {
     if (!sessionId) {
@@ -183,6 +279,7 @@ export function SessionDashboardPage() {
         setAutoCategorizeOnUpload(sessionDetails.autoCategorizeOnUpload !== false);
         const normalized = response.map((item) => ({
           ...item,
+          displayName: resolveDisplayName(item),
           statementType: toStatementType(item.statementType),
           category: toFileCategory(item.category),
           autoDetectedType: toStatementType(item.autoDetectedType),
@@ -225,7 +322,11 @@ export function SessionDashboardPage() {
   }, [existingFiles]);
 
   const uploadableFiles = useMemo(
-    () => pendingFiles.filter((item) => item.file.type === 'application/pdf'),
+    () => pendingFiles.filter((item) => !item.warning),
+    [pendingFiles],
+  );
+  const hasInvalidPendingFiles = useMemo(
+    () => pendingFiles.some((item) => Boolean(item.warning)),
     [pendingFiles],
   );
 
@@ -242,7 +343,7 @@ export function SessionDashboardPage() {
       localId: `${file.name}-${file.size}-${Date.now()}-${index}`,
       file,
       statementType: 'unknown',
-      warning: file.type === 'application/pdf' ? undefined : 'Only PDF files can be uploaded.',
+      warning: getPendingFileValidationWarning(file),
     }));
 
     setPendingFiles(nextPending);
@@ -268,7 +369,7 @@ export function SessionDashboardPage() {
   }
 
   async function detectPendingFileTypes(currentSessionId: string, pending: PendingUploadFile[]) {
-    const pdfPending = pending.filter((item) => item.file.type === 'application/pdf');
+    const pdfPending = pending.filter((item) => item.file.type === 'application/pdf' && !item.warning);
     if (pdfPending.length === 0) {
       return;
     }
@@ -356,6 +457,11 @@ export function SessionDashboardPage() {
       return;
     }
 
+    if (hasInvalidPendingFiles) {
+      setErrorMessage('Remove files with errors before uploading.');
+      return;
+    }
+
     if (uploadableFiles.length === 0) {
       setErrorMessage('Select at least one PDF file to upload.');
       return;
@@ -378,6 +484,7 @@ export function SessionDashboardPage() {
       const response = await apiClient.post<UploadResponse>(`/sessions/${sessionId}/files`, formData);
       const uploadedItems = response.uploaded.map((item) => ({
         ...item,
+        displayName: resolveDisplayName(item),
         statementType: toStatementType(item.statementType),
         category: toFileCategory(item.category),
         autoDetectedType: toStatementType(item.autoDetectedType),
@@ -417,7 +524,7 @@ export function SessionDashboardPage() {
     if (!file.id) {
       return;
     }
-    if (isDeletingAllFiles) {
+    if (isDeletingAnyFiles) {
       return;
     }
 
@@ -426,7 +533,7 @@ export function SessionDashboardPage() {
     setErrorMessage(null);
     setSuccessMessage(null);
     try {
-      const result = await apiClient.patch<{ id: string; statementType: StatementType }>(
+      const result = await apiClient.patch<UpdateFileResponse>(
         `/files/${file.id}`,
         { statementType: nextType },
       );
@@ -438,11 +545,12 @@ export function SessionDashboardPage() {
           }
 
           const nextType = toStatementType(result.statementType);
-          const currentCategory = toFileCategory(item.category);
           return {
             ...item,
+            originalName: result.originalName,
+            displayName: resolveDisplayName(result),
             statementType: nextType,
-            category: currentCategory === 'unfiled' ? currentCategory : nextType,
+            category: toFileCategory(result.category),
           };
         }));
       setTypeDrafts((current) => {
@@ -450,7 +558,7 @@ export function SessionDashboardPage() {
         delete copy[file.id];
         return copy;
       });
-      const message = `Updated statement type for ${file.originalName}.`;
+      const message = `Updated statement type for ${resolveDisplayName(file)}.`;
       setSuccessMessage(message);
       showToast(message, 'success');
     } catch {
@@ -461,16 +569,53 @@ export function SessionDashboardPage() {
     }
   }
 
-  async function handleDeleteFile(file: FileRecordItem) {
-    if (!file.id) {
-      return;
-    }
-    if (isDeletingAllFiles) {
+  function startEditingFileName(file: FileRecordItem) {
+    if (!file.id || isDeletingAnyFiles || isMovingFilesToFolder) {
       return;
     }
 
-    const confirmed = window.confirm(`Delete file "${file.originalName}"?`);
-    if (!confirmed) {
+    const displayName = resolveDisplayName(file);
+    const lockedExtension = getFileExtension(file.originalName);
+    const editableBaseName = splitDisplayNameForEdit(displayName, lockedExtension);
+    setNameDrafts((current) => ({
+      ...current,
+      [file.id]: current[file.id] ?? editableBaseName,
+    }));
+    setEditingNameFileId(file.id);
+  }
+
+  function updateNameDraft(fileId: string, baseName: string) {
+    setNameDrafts((current) => ({ ...current, [fileId]: baseName }));
+  }
+
+  function stopEditingFileName(fileId: string) {
+    setEditingNameFileId((current) => (current === fileId ? null : current));
+    setNameDrafts((current) => {
+      const next = { ...current };
+      delete next[fileId];
+      return next;
+    });
+  }
+
+  async function saveFileName(file: FileRecordItem) {
+    if (!file.id || isDeletingAnyFiles || isMovingFilesToFolder) {
+      return;
+    }
+
+    const lockedExtension = getFileExtension(file.originalName);
+    const currentDisplayName = resolveDisplayName(file);
+    const currentDisplayBase = splitDisplayNameForEdit(currentDisplayName, lockedExtension);
+    const nextDisplayNameDraft = nameDrafts[file.id] ?? currentDisplayBase;
+    if (nextDisplayNameDraft.trim().length === 0) {
+      return;
+    }
+    const nextDisplayName = normalizeDisplayName(`${nextDisplayNameDraft.trim()}${lockedExtension}`);
+    const validationError = getDisplayNameValidationError(nextDisplayName);
+    if (validationError) {
+      return;
+    }
+    if (nextDisplayName === currentDisplayName) {
+      stopEditingFileName(file.id);
       return;
     }
 
@@ -478,11 +623,161 @@ export function SessionDashboardPage() {
     setErrorMessage(null);
     setSuccessMessage(null);
     try {
-      await apiClient.delete<{ deleted: boolean }>(`/files/${file.id}`);
-      setExistingFiles((current) => current.filter((item) => item.id !== file.id));
-      const message = `Deleted ${file.originalName}.`;
+      const result = await apiClient.patch<UpdateFileResponse>(
+        `/files/${file.id}`,
+        { displayName: nextDisplayName },
+      );
+
+      setExistingFiles((current) =>
+        current.map((item) => {
+          if (item.id !== file.id) {
+            return item;
+          }
+
+          return {
+            ...item,
+            originalName: result.originalName,
+            displayName: resolveDisplayName(result),
+            statementType: toStatementType(result.statementType),
+            category: toFileCategory(result.category),
+          };
+        }));
+      stopEditingFileName(file.id);
+      const message = `Updated display name to ${resolveDisplayName(result)}.`;
       setSuccessMessage(message);
       showToast(message, 'success');
+    } catch {
+      setErrorMessage('Could not update this display name.');
+      showToast('Could not update this display name.', 'error');
+    } finally {
+      setBusyFileId(null);
+    }
+  }
+
+  function handleFileNameInputKeyDown(event: KeyboardEvent<HTMLInputElement>, file: FileRecordItem) {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      void saveFileName(file);
+      return;
+    }
+
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      stopEditingFileName(file.id);
+    }
+  }
+
+  function removePendingFile(localId: string) {
+    setPendingFiles((current) => current.filter((item) => item.localId !== localId));
+  }
+
+  function dismissUploadWarning(index: number) {
+    setUploadWarnings((current) => current.filter((_, currentIndex) => currentIndex !== index));
+  }
+
+  function findDuplicateFileForWarning(warning: UploadWarningItem): FileRecordItem | null {
+    const warningFileNameKey = getFileNameKey(warning.originalName);
+    const candidates = existingFiles.filter((file) => {
+      if (!file.id) {
+        return false;
+      }
+      if (getFileNameKey(file.originalName) !== warningFileNameKey) {
+        return false;
+      }
+      return getFileNameKey(resolveDisplayName(file)) === warningFileNameKey;
+    });
+
+    if (candidates.length === 0) {
+      return null;
+    }
+
+    if (candidates.length === 1) {
+      return candidates[0];
+    }
+
+    const sortedByMostRecentUpload = [...candidates].sort((left, right) => {
+      const leftDate = left.uploadedAt ? Date.parse(left.uploadedAt) : 0;
+      const rightDate = right.uploadedAt ? Date.parse(right.uploadedAt) : 0;
+      return rightDate - leftDate;
+    });
+
+    return sortedByMostRecentUpload[0] ?? null;
+  }
+
+  async function handleDeleteDuplicateFromWarning(warning: UploadWarningItem, index: number) {
+    const duplicateFile = findDuplicateFileForWarning(warning);
+    if (!duplicateFile?.id) {
+      const message = 'Could not find the duplicate file to delete.';
+      setErrorMessage(message);
+      showToast(message, 'error');
+      return;
+    }
+
+    const warningKey = `${warning.originalName}-${index}`;
+    setResolvingWarningKey(warningKey);
+    setBusyFileId(duplicateFile.id);
+    setErrorMessage(null);
+    setSuccessMessage(null);
+
+    try {
+      await apiClient.delete<{ deleted: boolean }>(`/files/${duplicateFile.id}`);
+      setExistingFiles((current) => current.filter((item) => item.id !== duplicateFile.id));
+      setTypeDrafts((current) => {
+        const next = { ...current };
+        delete next[duplicateFile.id];
+        return next;
+      });
+      setNameDrafts((current) => {
+        const next = { ...current };
+        delete next[duplicateFile.id];
+        return next;
+      });
+      setSelectedFileIds((current) => current.filter((id) => id !== duplicateFile.id));
+      stopEditingFileName(duplicateFile.id);
+      dismissUploadWarning(index);
+
+      const message = `Deleted duplicate file "${warning.originalName}".`;
+      setSuccessMessage(message);
+      showToast(message, 'success');
+    } catch {
+      const message = 'Could not delete the duplicate file.';
+      setErrorMessage(message);
+      showToast(message, 'error');
+    } finally {
+      setBusyFileId((current) => (current === duplicateFile.id ? null : current));
+      setResolvingWarningKey((current) => (current === warningKey ? null : current));
+    }
+  }
+
+  function requestDeleteFile(file: FileRecordItem) {
+    if (!file.id) {
+      return;
+    }
+    if (isDeletingAnyFiles) {
+      return;
+    }
+
+    setFilePendingDelete({
+      id: file.id,
+      displayName: resolveDisplayName(file),
+    });
+  }
+
+  async function confirmDeleteFile() {
+    const targetFile = filePendingDelete;
+    if (!targetFile) {
+      return;
+    }
+
+    setBusyFileId(targetFile.id);
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    try {
+      await apiClient.delete<{ deleted: boolean }>(`/files/${targetFile.id}`);
+      removeFilesFromLocalState([targetFile.id]);
+      const message = `Deleted ${targetFile.displayName}.`;
+      showToast(message, 'success');
+      setFilePendingDelete(null);
     } catch {
       setErrorMessage('Could not delete this file.');
       showToast('Could not delete this file.', 'error');
@@ -612,8 +907,92 @@ export function SessionDashboardPage() {
     }
   }
 
+  function removeFilesFromLocalState(deletedIds: string[]) {
+    if (deletedIds.length === 0) {
+      return;
+    }
+
+    const deletedIdSet = new Set(deletedIds);
+    setExistingFiles((current) => current.filter((file) => !deletedIdSet.has(file.id)));
+    setTypeDrafts((current) => {
+      const next = { ...current };
+      deletedIds.forEach((id) => {
+        delete next[id];
+      });
+      return next;
+    });
+    setNameDrafts((current) => {
+      const next = { ...current };
+      deletedIds.forEach((id) => {
+        delete next[id];
+      });
+      return next;
+    });
+    setSelectedFileIds((current) => current.filter((id) => !deletedIdSet.has(id)));
+    setEditingNameFileId((current) => (current && deletedIdSet.has(current) ? null : current));
+  }
+
   function requestDeleteSession() {
     setShowDeleteSessionConfirm(true);
+  }
+
+  function requestDeleteSelectedFiles() {
+    if (selectedFileIds.length === 0) {
+      showToast('Select at least one uploaded file to delete.', 'info');
+      return;
+    }
+
+    setShowDeleteSelectedFilesConfirm(true);
+  }
+
+  async function confirmDeleteSelectedFiles() {
+    const selectedIdSet = new Set(selectedFileIds);
+    const targetFiles = existingFiles.filter((file) => file.id && selectedIdSet.has(file.id));
+    if (targetFiles.length === 0) {
+      setShowDeleteSelectedFilesConfirm(false);
+      showToast('No selected uploaded files to delete.', 'info');
+      return;
+    }
+
+    setIsDeletingSelectedFiles(true);
+    setErrorMessage(null);
+    setSuccessMessage(null);
+
+    const results = await Promise.allSettled(
+      targetFiles.map((file) => apiClient.delete<{ deleted: boolean }>(`/files/${file.id}`)),
+    );
+
+    const deletedIds: string[] = [];
+    let failedCount = 0;
+    results.forEach((result, index) => {
+      if (result.status === 'fulfilled') {
+        const id = targetFiles[index]?.id;
+        if (id) {
+          deletedIds.push(id);
+        }
+      } else {
+        failedCount += 1;
+      }
+    });
+
+    removeFilesFromLocalState(deletedIds);
+
+    if (failedCount === 0) {
+      const message = `Deleted ${deletedIds.length} selected file${deletedIds.length === 1 ? '' : 's'}.`;
+      setSuccessMessage(message);
+      showToast(message, 'success');
+    } else if (deletedIds.length === 0) {
+      const message = 'Unable to delete selected files right now.';
+      setErrorMessage(message);
+      showToast(message, 'error');
+    } else {
+      const message = `Deleted ${deletedIds.length} selected file${deletedIds.length === 1 ? '' : 's'}. ${failedCount} failed.`;
+      setErrorMessage(message);
+      showToast(message, 'error');
+    }
+
+    setShowDeleteSelectedFilesConfirm(false);
+    setIsDeletingSelectedFiles(false);
   }
 
   function requestDeleteAllFiles() {
@@ -660,17 +1039,7 @@ export function SessionDashboardPage() {
       }
     });
 
-    if (deletedIds.length > 0) {
-      const deletedIdSet = new Set(deletedIds);
-      setExistingFiles((current) => current.filter((file) => !deletedIdSet.has(file.id)));
-      setTypeDrafts((current) => {
-        const next = { ...current };
-        deletedIds.forEach((id) => {
-          delete next[id];
-        });
-        return next;
-      });
-    }
+    removeFilesFromLocalState(deletedIds);
 
     if (failedCount === 0) {
       const message = `Deleted ${deletedIds.length} file${deletedIds.length === 1 ? '' : 's'}.`;
@@ -712,6 +1081,23 @@ export function SessionDashboardPage() {
 
   function renderUploadedFileCard(file: FileRecordItem) {
     const draftValue = typeDrafts[file.id] ?? file.statementType;
+    const currentDisplayName = resolveDisplayName(file);
+    const lockedExtension = getFileExtension(file.originalName);
+    const currentDisplayBase = splitDisplayNameForEdit(currentDisplayName, lockedExtension);
+    const nameDraftValue = nameDrafts[file.id] ?? currentDisplayBase;
+    const composedDisplayName = `${nameDraftValue.trim()}${lockedExtension}`;
+    const normalizedComposedDisplayName = normalizeDisplayName(composedDisplayName);
+    const displayNameValidationError = nameDraftValue.trim().length === 0
+      ? 'Display name cannot be empty.'
+      : getDisplayNameValidationError(composedDisplayName);
+    const isEditingName = editingNameFileId === file.id;
+    const renameDisabled = busyFileId === file.id
+      || viewingFileId === file.id
+      || isDeletingAnyFiles
+      || isMovingFilesToFolder;
+    const renameSaveDisabled = renameDisabled
+      || Boolean(displayNameValidationError)
+      || normalizedComposedDisplayName === currentDisplayName;
     const saveDisabled = busyFileId === file.id
       || viewingFileId === file.id
       || draftValue === file.statementType;
@@ -723,19 +1109,79 @@ export function SessionDashboardPage() {
 
     return (
       <article className="result-box dashboard-uploaded-item minw0" key={file.id} role="listitem">
-        <div className="dashboard-uploaded-top minw0">
-          <p className="dashboard-file-name break minw0">
+        <div className={`dashboard-uploaded-top minw0${isEditingName ? ' dashboard-uploaded-top-editing' : ''}`}>
+          <p className="dashboard-file-name minw0">
             <label className="session-select-inline">
               <input
                 className="session-select-input"
                 type="checkbox"
                 checked={isSelectedForMove}
                 onChange={(event) => toggleFileSelection(file.id, event.target.checked)}
-                disabled={isMovingFilesToFolder}
-                aria-label={`Select ${file.originalName} for folder move`}
+                disabled={isMovingFilesToFolder || isDeletingAnyFiles}
+                aria-label={`Select ${currentDisplayName} for bulk actions`}
               />
             </label>
-            <strong>{file.originalName}</strong>
+            {!isEditingName && (
+              <span className="dashboard-file-name-readonly minw0">
+                <strong title={currentDisplayName}>{currentDisplayName}</strong>
+                <button
+                  className="dashboard-rename-icon-button"
+                  type="button"
+                  onClick={() => startEditingFileName(file)}
+                  disabled={renameDisabled}
+                  aria-label={`Edit display name for ${currentDisplayName}`}
+                  title="Edit display name"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path
+                      d="M16.862 3.487a2.25 2.25 0 0 1 3.182 3.182L8.32 18.393l-4.004.821.822-4.004L16.862 3.487zm0 0 3.182 3.182"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </button>
+              </span>
+            )}
+            {isEditingName && (
+              <span className="dashboard-file-name-editor minw0">
+                <span className="dashboard-file-name-input-row">
+                  <input
+                    className="input dashboard-file-name-input"
+                    value={nameDraftValue}
+                    onChange={(event) => updateNameDraft(file.id, event.target.value)}
+                    onKeyDown={(event) => handleFileNameInputKeyDown(event, file)}
+                    disabled={renameDisabled}
+                    aria-label={`Edit display name for ${currentDisplayName}`}
+                  />
+                  {lockedExtension && <span className="dashboard-file-extension-pill">{lockedExtension}</span>}
+                </span>
+                <small className={displayNameValidationError ? 'text-error dashboard-name-counter' : 'muted dashboard-name-counter'}>
+                  {`${nameDraftValue.length + lockedExtension.length} / ${MAX_DISPLAY_NAME_LENGTH}`}
+                </small>
+                {displayNameValidationError && <p className="text-error dashboard-name-error">{displayNameValidationError}</p>}
+                <span className="dashboard-file-name-editor-actions">
+                  <button
+                    className="button button-secondary"
+                    type="button"
+                    onClick={() => void saveFileName(file)}
+                    disabled={renameSaveDisabled}
+                  >
+                    {busyFileId === file.id ? 'Saving...' : 'Save Name'}
+                  </button>
+                  <button
+                    className="button button-secondary"
+                    type="button"
+                    onClick={() => stopEditingFileName(file.id)}
+                    disabled={renameDisabled}
+                  >
+                    Cancel
+                  </button>
+                </span>
+              </span>
+            )}
           </p>
           <span className="dashboard-status-badge">
             {statusLabel}
@@ -772,7 +1218,7 @@ export function SessionDashboardPage() {
               className="input"
               value={draftValue}
               onChange={(event) => updateDraftType(file.id, toStatementType(event.target.value))}
-              disabled={busyFileId === file.id || isDeletingAllFiles || isMovingFilesToFolder}
+              disabled={busyFileId === file.id || isDeletingAnyFiles || isMovingFilesToFolder}
             >
               {STATEMENT_TYPE_OPTIONS.map((option) => (
                 <option key={option} value={option}>{option}</option>
@@ -785,7 +1231,7 @@ export function SessionDashboardPage() {
               className="button button-secondary"
               type="button"
               onClick={() => handleViewFile(file)}
-              disabled={busyFileId === file.id || viewingFileId === file.id || isDeletingAllFiles || isMovingFilesToFolder}
+              disabled={busyFileId === file.id || viewingFileId === file.id || isDeletingAnyFiles || isMovingFilesToFolder}
             >
               {viewingFileId === file.id ? 'Opening...' : 'View File'}
             </button>
@@ -794,7 +1240,7 @@ export function SessionDashboardPage() {
               className="button button-secondary"
               type="button"
               onClick={() => saveFileType(file)}
-              disabled={saveDisabled || isDeletingAllFiles || isMovingFilesToFolder}
+              disabled={saveDisabled || isDeletingAnyFiles || isMovingFilesToFolder}
             >
               {busyFileId === file.id ? 'Saving...' : 'Save Type'}
             </button>
@@ -802,8 +1248,8 @@ export function SessionDashboardPage() {
             <button
               className="button button-secondary"
               type="button"
-              onClick={() => handleDeleteFile(file)}
-              disabled={busyFileId === file.id || isDeletingAllFiles || isMovingFilesToFolder}
+              onClick={() => requestDeleteFile(file)}
+              disabled={busyFileId === file.id || isDeletingAnyFiles || isMovingFilesToFolder}
             >
               {busyFileId === file.id ? 'Working...' : 'Delete File'}
             </button>
@@ -837,8 +1283,16 @@ export function SessionDashboardPage() {
     savings: filesByCategory.savings.length,
     unknown: filesByCategory.unknown.length,
   };
+  const selectedUploadedFiles = useMemo(() => {
+    if (selectedFileIds.length === 0) {
+      return [];
+    }
+    const selectedIdSet = new Set(selectedFileIds);
+    return existingFiles.filter((file) => selectedIdSet.has(file.id));
+  }, [existingFiles, selectedFileIds]);
+  const selectedFileCount = selectedUploadedFiles.length;
   const managementActionsDisabled = isLoadingFiles
-    || isDeletingAllFiles
+    || isDeletingAnyFiles
     || isDeletingSession
     || isMovingFilesToFolder
     || isUpdatingSessionSettings;
@@ -875,7 +1329,7 @@ export function SessionDashboardPage() {
         <>
           <section
             className="card dashboard-manage-panel"
-            aria-busy={isDeletingAllFiles || isDeletingSession || isUpdatingSessionSettings || isMovingFilesToFolder}
+            aria-busy={isDeletingAnyFiles || isDeletingSession || isUpdatingSessionSettings || isMovingFilesToFolder}
           >
             <div className="dashboard-manage-header">
               <div>
@@ -914,7 +1368,7 @@ export function SessionDashboardPage() {
                 onClick={requestDeleteAllFiles}
                 disabled={managementActionsDisabled || existingFiles.length === 0}
               >
-                {isDeletingAllFiles ? 'Deleting files...' : 'Delete All Files'}
+                {isDeletingAnyFiles ? 'Deleting files...' : 'Delete All Files'}
               </button>
               <button
                 className="button danger-button"
@@ -980,6 +1434,17 @@ export function SessionDashboardPage() {
                           ))}
                         </select>
                       </label>
+
+                      <div className="actions dashboard-pending-actions">
+                        <button
+                          className="button button-secondary"
+                          type="button"
+                          onClick={() => removePendingFile(item.localId)}
+                          disabled={isUploading}
+                        >
+                          Remove
+                        </button>
+                      </div>
                     </article>
                   ))}
                 </div>
@@ -992,9 +1457,10 @@ export function SessionDashboardPage() {
                   onClick={handleUpload}
                   disabled={
                     isUploading
-                    || isDeletingAllFiles
+                    || isDeletingAnyFiles
                     || isDeletingSession
                     || isMovingFilesToFolder
+                    || hasInvalidPendingFiles
                     || uploadableFiles.length === 0
                   }
                 >
@@ -1006,9 +1472,41 @@ export function SessionDashboardPage() {
                 <div className="stack-sm">
                   <h3>Warnings</h3>
                   {uploadWarnings.map((warning, index) => (
-                    <p className="text-warning" key={`${warning.originalName}-${index}`}>
-                      {warning.originalName}: {warning.reason}
-                    </p>
+                    (() => {
+                      const warningKey = `${warning.originalName}-${index}`;
+                      const duplicateFile = findDuplicateFileForWarning(warning);
+                      const actionDisabled = resolvingWarningKey !== null
+                        || isDeletingAnyFiles
+                        || isUploading
+                        || isMovingFilesToFolder;
+
+                      return (
+                        <article className="dashboard-warning-item" key={warningKey}>
+                          <p className="text-warning">
+                            {warning.originalName}: {warning.reason}
+                          </p>
+                          <p className="muted">Delete duplicate or keep both files.</p>
+                          <div className="dashboard-warning-actions">
+                            <button
+                              className="button button-secondary"
+                              type="button"
+                              onClick={() => void handleDeleteDuplicateFromWarning(warning, index)}
+                              disabled={actionDisabled || !duplicateFile?.id}
+                            >
+                              {resolvingWarningKey === warningKey ? 'Deleting...' : 'Delete duplicate'}
+                            </button>
+                            <button
+                              className="button button-secondary"
+                              type="button"
+                              onClick={() => dismissUploadWarning(index)}
+                              disabled={actionDisabled}
+                            >
+                              Keep both files
+                            </button>
+                          </div>
+                        </article>
+                      );
+                    })()
                   ))}
                 </div>
               )}
@@ -1029,7 +1527,7 @@ export function SessionDashboardPage() {
               <h2>Uploaded Files</h2>
               <div className="dashboard-file-move-controls">
                 <label className="field">
-                  <span>Move selected files</span>
+                  <span>Move or delete selected files</span>
                   <select
                     className="input"
                     value={moveTargetFolder}
@@ -1047,9 +1545,17 @@ export function SessionDashboardPage() {
                   className="button button-secondary"
                   type="button"
                   onClick={moveSelectedFiles}
-                  disabled={isMovingFilesToFolder || selectedFileIds.length === 0}
+                  disabled={isMovingFilesToFolder || isDeletingAnyFiles || selectedFileCount === 0}
                 >
-                  {isMovingFilesToFolder ? 'Moving...' : `Move Selected (${selectedFileIds.length})`}
+                  {isMovingFilesToFolder ? 'Moving...' : `Move Selected (${selectedFileCount})`}
+                </button>
+                <button
+                  className="button danger-button"
+                  type="button"
+                  onClick={requestDeleteSelectedFiles}
+                  disabled={isMovingFilesToFolder || isDeletingAnyFiles || selectedFileCount === 0}
+                >
+                  {isDeletingSelectedFiles ? 'Deleting selected...' : `Delete Selected (${selectedFileCount})`}
                 </button>
               </div>
               {isLoadingFiles && <p className="muted" role="status">Loading files...</p>}
@@ -1100,6 +1606,36 @@ export function SessionDashboardPage() {
           </nav>
         </>
       )}
+
+      <ConfirmDialog
+        open={Boolean(filePendingDelete)}
+        title="Delete file?"
+        message={
+          filePendingDelete
+            ? `Delete "${filePendingDelete.displayName}"?`
+            : 'Delete this file?'
+        }
+        confirmLabel="Delete file"
+        destructive
+        busy={Boolean(filePendingDelete && busyFileId === filePendingDelete.id)}
+        onCancel={() => setFilePendingDelete(null)}
+        onConfirm={confirmDeleteFile}
+      />
+
+      <ConfirmDialog
+        open={showDeleteSelectedFilesConfirm}
+        title="Delete selected files?"
+        message={
+          selectedFileCount === 1
+            ? 'This will permanently delete the selected uploaded file.'
+            : `This will permanently delete ${selectedFileCount} selected uploaded files.`
+        }
+        confirmLabel="Delete selected files"
+        destructive
+        busy={isDeletingSelectedFiles}
+        onCancel={() => setShowDeleteSelectedFilesConfirm(false)}
+        onConfirm={confirmDeleteSelectedFiles}
+      />
 
       <ConfirmDialog
         open={showDeleteAllFilesConfirm}

@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -77,7 +78,11 @@ export class FilesController {
     @Body() dto: UpdateFileDto,
     @Req() req: AuthenticatedRequest,
   ): Promise<UpdateFileResponse> {
-    return this.filesService.updateFileStatementType(fileId, dto.statementType, this.getAuthenticatedUser(req));
+    if (dto.statementType === undefined && dto.originalName === undefined && dto.displayName === undefined) {
+      throw new BadRequestException('At least one updatable field must be provided.');
+    }
+
+    return this.filesService.updateFile(fileId, dto, this.getAuthenticatedUser(req));
   }
 
   @UseGuards(JwtAuthGuard)

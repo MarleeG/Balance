@@ -25,6 +25,12 @@ export enum FileCategory {
   Unfiled = 'unfiled',
 }
 
+export enum AccountType {
+  Credit = 'credit',
+  Checking = 'checking',
+  Savings = 'savings',
+}
+
 @Schema({ collection: 'files', timestamps: true })
 export class FileRecord {
   @Prop({ required: true, trim: true })
@@ -33,11 +39,23 @@ export class FileRecord {
   @Prop({ required: true, trim: true })
   originalName: string;
 
+  @Prop({ trim: true, maxlength: 80 })
+  displayName?: string;
+
   @Prop({ required: true, trim: true })
   mimeType: string;
 
   @Prop({ required: true, min: 1 })
-  size: number;
+  byteSize: number;
+
+  // Legacy field kept for migration compatibility with older records.
+  @Prop({ min: 1 })
+  size?: number;
+
+  @Prop({
+    enum: AccountType,
+  })
+  accountType?: AccountType;
 
   @Prop({
     enum: StatementType,
