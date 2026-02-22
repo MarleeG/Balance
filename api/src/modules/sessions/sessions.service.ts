@@ -19,6 +19,7 @@ import type { CreateSessionDto } from './dto/create-session.dto';
 import { generateSessionId } from './utils/session-id';
 
 const DEFAULT_SESSION_TTL_DAYS = 7;
+const DAY_IN_MS = 24 * 60 * 60 * 1000;
 const SESSION_ID_RETRY_LIMIT = 5;
 const SESSION_ID_COLLISION_MESSAGE = 'Unable to create a unique session ID after 5 attempts.';
 const SESSION_NOT_FOUND_MESSAGE = 'Session not found.';
@@ -212,6 +213,9 @@ export class SessionsService {
       status: FileStatus.Uploaded,
     }).exec();
 
+    // Session deletion cascades only to stored files. Label/label-rule intelligence
+    // is intentionally not deleted because it is owner-level and should continue to
+    // power suggestions across future uploads and sessions.
     const deleteResults = await Promise.allSettled(
       uploadedFiles.map(async (file) => this.storageService.deleteObject(file.s3Bucket, file.s3Key)),
     );
@@ -236,6 +240,27 @@ export class SessionsService {
     }
 
     return { deleted: true };
+  }
+
+  async extendSessionExpiration(
+    sessionId: string,
+    user: { email: string; sessionId?: string },
+    days: 1 | 3 | 7,
+  ): Promise<SessionSummary> {
+    const session = await this.getOwnedSessionById(sessionId, user);
+    const now = new Date();
+    const currentExpiresAt = new Date(session.expiresAt).getTime();
+    const baseMs = Number.isFinite(currentExpiresAt) && currentExpiresAt > now.getTime()
+      ? currentExpiresAt
+      : now.getTime();
+
+    session.expiresAt = new Date(baseMs + (days * DAY_IN_MS));
+    session.lastAccessedAt = now;
+    session.status = SessionStatus.Active;
+    await session.save();
+
+    const uploadedFileCounts = await this.getUploadedFileCountsBySessionIds([session.sessionId]);
+    return this.toSessionSummary(session, uploadedFileCounts.get(session.sessionId) ?? 0);
   }
 
   private async getOwnedSessionById(

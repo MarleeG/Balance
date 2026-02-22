@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ApiError, apiClient, apiRequestBlob, getAccessToken } from '../api';
 import { AppLayout } from '../ui/AppLayout';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
+import { SessionExpiryExtendDialogManager } from '../ui/SessionExpiryExtendDialogManager';
 import { useToast } from '../ui/toast-provider';
 
 type StatementType = 'credit' | 'checking' | 'savings' | 'unknown';
@@ -53,6 +54,7 @@ interface DetectFilesResponse {
 
 interface SessionDetailsResponse {
   sessionId: string;
+  expiresAt?: string;
   autoCategorizeOnUpload?: boolean;
 }
 
@@ -88,6 +90,13 @@ const STATEMENT_TYPE_OPTIONS: StatementType[] = ['unknown', 'credit', 'checking'
 const FOLDER_OPTIONS: StatementType[] = ['credit', 'checking', 'savings', 'unknown'];
 const MOVE_TARGET_OPTIONS: FileCategory[] = ['unfiled', ...FOLDER_OPTIONS];
 const AUTH_REQUIRED_MESSAGE = 'To access this session, continue via email link.';
+const DEFAULT_FOLDER_COLLAPSE_STATE: Record<FileCategory, boolean> = {
+  unfiled: false,
+  credit: false,
+  checking: false,
+  savings: false,
+  unknown: false,
+};
 
 function formatBytes(bytes?: number): string {
   if (!bytes || bytes < 0) {
@@ -237,6 +246,11 @@ export function SessionDashboardPage() {
   const [autoCategorizeOnUpload, setAutoCategorizeOnUpload] = useState(true);
   const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
   const [moveTargetFolder, setMoveTargetFolder] = useState<FileCategory>('checking');
+  const [collapsedFolders, setCollapsedFolders] = useState<Record<FileCategory, boolean>>(
+    () => ({ ...DEFAULT_FOLDER_COLLAPSE_STATE }),
+  );
+  const [sessionExpiresAt, setSessionExpiresAt] = useState<string | null>(null);
+  const [sessionRefreshKey, setSessionRefreshKey] = useState(0);
 
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -277,6 +291,7 @@ export function SessionDashboardPage() {
         }
 
         setAutoCategorizeOnUpload(sessionDetails.autoCategorizeOnUpload !== false);
+        setSessionExpiresAt(sessionDetails.expiresAt ?? null);
         const normalized = response.map((item) => ({
           ...item,
           displayName: resolveDisplayName(item),
@@ -313,7 +328,7 @@ export function SessionDashboardPage() {
       cancelled = true;
       controller.abort();
     };
-  }, [hasAccessToken, sessionId, showToast]);
+  }, [hasAccessToken, sessionId, sessionRefreshKey, showToast]);
 
   useEffect(() => {
     setSelectedFileIds((current) =>
@@ -763,6 +778,52 @@ export function SessionDashboardPage() {
     });
   }
 
+  function toggleFolderSection(category: FileCategory) {
+    setCollapsedFolders((current) => ({
+      ...current,
+      [category]: !current[category],
+    }));
+  }
+
+  function renderFolderSection(
+    category: FileCategory,
+    title: string,
+    files: FileRecordItem[],
+    emptyStateCopy: string,
+  ) {
+    const isCollapsed = collapsedFolders[category];
+    const contentId = `dashboard-folder-content-${category}`;
+
+    return (
+      <section className="result-box dashboard-folder-section" key={category}>
+        <div className="dashboard-folder-header">
+          <h3>{title}</h3>
+          <div className="dashboard-folder-header-actions">
+            <button
+              className="dashboard-folder-collapse-button"
+              type="button"
+              onClick={() => toggleFolderSection(category)}
+              aria-expanded={!isCollapsed}
+              aria-controls={contentId}
+            >
+              {isCollapsed ? 'Expand' : 'Collapse'}
+            </button>
+            <span className="dashboard-status-badge">{files.length}</span>
+          </div>
+        </div>
+        <div id={contentId} className="dashboard-folder-content" hidden={isCollapsed}>
+          {files.length === 0 ? (
+            <p className="muted">{emptyStateCopy}</p>
+          ) : (
+            <div className="stack-md">
+              {files.map((file) => renderUploadedFileCard(file))}
+            </div>
+          )}
+        </div>
+      </section>
+    );
+  }
+
   async function confirmDeleteFile() {
     const targetFile = filePendingDelete;
     if (!targetFile) {
@@ -775,7 +836,7 @@ export function SessionDashboardPage() {
     try {
       await apiClient.delete<{ deleted: boolean }>(`/files/${targetFile.id}`);
       removeFilesFromLocalState([targetFile.id]);
-      const message = `Deleted ${targetFile.displayName}.`;
+      const message = `Deleted ${targetFile.displayName}. Labels and rules were kept for future suggestions.`;
       showToast(message, 'success');
       setFilePendingDelete(null);
     } catch {
@@ -978,7 +1039,7 @@ export function SessionDashboardPage() {
     removeFilesFromLocalState(deletedIds);
 
     if (failedCount === 0) {
-      const message = `Deleted ${deletedIds.length} selected file${deletedIds.length === 1 ? '' : 's'}.`;
+      const message = `Deleted ${deletedIds.length} selected file${deletedIds.length === 1 ? '' : 's'}. Labels and rules were kept for future suggestions.`;
       setSuccessMessage(message);
       showToast(message, 'success');
     } else if (deletedIds.length === 0) {
@@ -1042,7 +1103,7 @@ export function SessionDashboardPage() {
     removeFilesFromLocalState(deletedIds);
 
     if (failedCount === 0) {
-      const message = `Deleted ${deletedIds.length} file${deletedIds.length === 1 ? '' : 's'}.`;
+      const message = `Deleted ${deletedIds.length} file${deletedIds.length === 1 ? '' : 's'}. Labels and rules were kept for future suggestions.`;
       setSuccessMessage(message);
       showToast(message, 'success');
     } else if (deletedIds.length === 0) {
@@ -1566,41 +1627,21 @@ export function SessionDashboardPage() {
 
               {!isLoadingFiles && existingFiles.length > 0 && (
                 <div className="stack-md dashboard-uploaded-list" role="list" aria-label="Uploaded files">
-                  <section className="result-box dashboard-folder-section">
-                    <div className="dashboard-folder-header">
-                      <h3>Root (Unfiled)</h3>
-                      <span className="dashboard-status-badge">{unfiledFiles.length}</span>
-                    </div>
-                    {unfiledFiles.length === 0 ? (
-                      <p className="muted">No root files.</p>
-                    ) : (
-                      <div className="stack-md">
-                        {unfiledFiles.map((file) => renderUploadedFileCard(file))}
-                      </div>
-                    )}
-                  </section>
-
-                  {FOLDER_OPTIONS.map((category) => (
-                    <section className="result-box dashboard-folder-section" key={category}>
-                      <div className="dashboard-folder-header">
-                        <h3>{category[0].toUpperCase() + category.slice(1)} Folder</h3>
-                        <span className="dashboard-status-badge">{filesByCategory[category].length}</span>
-                      </div>
-                      {filesByCategory[category].length === 0 ? (
-                        <p className="muted">No files in this folder.</p>
-                      ) : (
-                        <div className="stack-md">
-                          {filesByCategory[category].map((file) => renderUploadedFileCard(file))}
-                        </div>
-                      )}
-                    </section>
-                  ))}
+                  {renderFolderSection('unfiled', 'Root (Unfiled)', unfiledFiles, 'No root files.')}
+                  {FOLDER_OPTIONS.map((category) =>
+                    renderFolderSection(
+                      category,
+                      `${category[0].toUpperCase() + category.slice(1)} Folder`,
+                      filesByCategory[category],
+                      'No files in this folder.',
+                    ))}
                 </div>
               )}
             </section>
           </div>
 
           <nav className="actions">
+            {sessionId && <Link to={`/sessions/${sessionId}/insights`}>Statement insights</Link>}
             <Link to="/sessions">Back to sessions</Link>
             <Link to="/">Back home</Link>
           </nav>
@@ -1612,7 +1653,7 @@ export function SessionDashboardPage() {
         title="Delete file?"
         message={
           filePendingDelete
-            ? `Delete "${filePendingDelete.displayName}"?`
+            ? `Delete "${filePendingDelete.displayName}"? Labels and label-rules will be kept for future suggestions.`
             : 'Delete this file?'
         }
         confirmLabel="Delete file"
@@ -1622,13 +1663,23 @@ export function SessionDashboardPage() {
         onConfirm={confirmDeleteFile}
       />
 
+      <SessionExpiryExtendDialogManager
+        sessionId={sessionId}
+        expiresAt={sessionExpiresAt}
+        hasAccessToken={hasAccessToken}
+        onExtended={(nextExpiresAt) => {
+          setSessionExpiresAt(nextExpiresAt);
+          setSessionRefreshKey((current) => current + 1);
+        }}
+      />
+
       <ConfirmDialog
         open={showDeleteSelectedFilesConfirm}
         title="Delete selected files?"
         message={
           selectedFileCount === 1
-            ? 'This will permanently delete the selected uploaded file.'
-            : `This will permanently delete ${selectedFileCount} selected uploaded files.`
+            ? 'This will permanently delete the selected uploaded file. Labels and label-rules will be kept.'
+            : `This will permanently delete ${selectedFileCount} selected uploaded files. Labels and label-rules will be kept.`
         }
         confirmLabel="Delete selected files"
         destructive
@@ -1642,8 +1693,8 @@ export function SessionDashboardPage() {
         title="Delete all files?"
         message={
           existingFiles.length === 1
-            ? 'This will permanently delete the only uploaded file in this session.'
-            : `This will permanently delete ${existingFiles.length} uploaded files in this session.`
+            ? 'This will permanently delete the only uploaded file in this session. Labels and label-rules will be kept.'
+            : `This will permanently delete ${existingFiles.length} uploaded files in this session. Labels and label-rules will be kept.`
         }
         confirmLabel="Delete all files"
         destructive

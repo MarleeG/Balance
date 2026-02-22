@@ -282,4 +282,74 @@ describe('SessionsService', () => {
     expect(result).toEqual({ autoCategorizeOnUpload: false });
     expect(save).toHaveBeenCalled();
   });
+
+  it('extends an active session from its current expiration timestamp', async () => {
+    const now = new Date('2026-02-22T18:00:00.000Z');
+    jest.useFakeTimers().setSystemTime(now);
+
+    const originalExpiresAt = new Date('2026-02-24T18:00:00.000Z');
+    const save = jest.fn().mockResolvedValue(undefined);
+    const ownedSession = {
+      sessionId: 'SESS4444',
+      email: 'user@example.com',
+      status: SessionStatus.Active,
+      expiresAt: originalExpiresAt,
+      autoCategorizeOnUpload: true,
+      createdAt: new Date('2026-02-20T12:00:00.000Z'),
+      save,
+    };
+
+    sessionsModel.findOne.mockReturnValue({
+      exec: jest.fn().mockResolvedValue(ownedSession),
+    });
+    filesModel.aggregate.mockReturnValue({
+      exec: jest.fn().mockResolvedValue([{ _id: 'SESS4444', count: 4 }]),
+    });
+
+    const result = await service.extendSessionExpiration('SESS4444', { email: 'user@example.com' }, 3);
+
+    expect(save).toHaveBeenCalled();
+    expect(result).toEqual(expect.objectContaining({
+      sessionId: 'SESS4444',
+      uploadedFileCount: 4,
+      expiresAt: new Date(originalExpiresAt.getTime() + (3 * 24 * 60 * 60 * 1000)).toISOString(),
+    }));
+
+    jest.useRealTimers();
+  });
+
+  it('extends an expired session from now and reactivates it', async () => {
+    const now = new Date('2026-02-22T18:00:00.000Z');
+    jest.useFakeTimers().setSystemTime(now);
+
+    const save = jest.fn().mockResolvedValue(undefined);
+    const ownedSession = {
+      sessionId: 'SESS5555',
+      email: 'user@example.com',
+      status: SessionStatus.Expired,
+      expiresAt: new Date('2026-02-20T10:00:00.000Z'),
+      autoCategorizeOnUpload: true,
+      createdAt: new Date('2026-02-15T12:00:00.000Z'),
+      save,
+    };
+
+    sessionsModel.findOne.mockReturnValue({
+      exec: jest.fn().mockResolvedValue(ownedSession),
+    });
+    filesModel.aggregate.mockReturnValue({
+      exec: jest.fn().mockResolvedValue([]),
+    });
+
+    const result = await service.extendSessionExpiration('SESS5555', { email: 'user@example.com' }, 1);
+
+    expect(save).toHaveBeenCalled();
+    expect(ownedSession.status).toBe(SessionStatus.Active);
+    expect(result).toEqual(expect.objectContaining({
+      sessionId: 'SESS5555',
+      uploadedFileCount: 0,
+      expiresAt: new Date(now.getTime() + (24 * 60 * 60 * 1000)).toISOString(),
+    }));
+
+    jest.useRealTimers();
+  });
 });

@@ -7,6 +7,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   Req,
   UnauthorizedException,
   UploadedFiles,
@@ -32,6 +33,7 @@ import {
   MultipartFile,
   RawFileResponse,
   SessionFileSummary,
+  SessionFilesGroupedSummary,
   UpdateFileResponse,
   UploadFilesResponse,
 } from './files.service';
@@ -66,7 +68,15 @@ export class FilesController {
 
   @UseGuards(JwtAuthGuard)
   @Get('sessions/:sessionId/files')
-  listSessionFiles(@Param('sessionId') sessionId: string, @Req() req: AuthenticatedRequest): Promise<SessionFileSummary[]> {
+  listSessionFiles(
+    @Param('sessionId') sessionId: string,
+    @Req() req: AuthenticatedRequest,
+    @Query('grouped') grouped?: string,
+  ): Promise<SessionFileSummary[] | SessionFilesGroupedSummary> {
+    if (grouped === 'true' || grouped === '1') {
+      return this.filesService.listSessionFilesGrouped(sessionId, this.getAuthenticatedUser(req));
+    }
+
     return this.filesService.listSessionFiles(sessionId, this.getAuthenticatedUser(req));
   }
 
